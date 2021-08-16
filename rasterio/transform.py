@@ -261,3 +261,20 @@ def from_gcps(gcps):
 
     """
     return Affine.from_gdal(*_transform_from_gcps(gcps))
+
+
+def multiply_scaler(transform, multiplier):
+    """Create a transform that has its scaler part multiplied by `multiplier`
+
+    Parameters
+    ----------
+    multiplier : sequence of int or float
+       A factor by which input `transform` gets its scaler part muliplied.
+    """
+    ul = xy(transform, [0], [0], 'ul')
+    lr = xy(transform, [0], [0], 'lr')
+    return from_origin(
+        ul[0],
+        ul[1],
+        (lr[0] - ul[0]) * multiplier[0],
+        (ul[1] - lr[1]) * multiplier[1])
