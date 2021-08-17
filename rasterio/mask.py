@@ -125,7 +125,7 @@ def raster_geometry_mask(dataset, shapes, all_touched=False, invert=False,
 
 def mask(dataset, shapes, all_touched=False, invert=False, nodata=None,
          filled=True, crop=False, pad=False, pad_width=0.5, indexes=None,
-         output_size_scaler=(1.0, 1.0)):
+         output_size_scaler=(1, 1)):
     """Creates a masked or filled array using input shapes.
     Pixels are masked or set to nodata outside the input shapes, unless
     `invert` is `True`.
@@ -164,6 +164,8 @@ def mask(dataset, shapes, all_touched=False, invert=False, nodata=None,
     indexes : list of ints or a single int (opt)
         If `indexes` is a list, the result is a 3D array, but is
         a 2D array if it is a band index number.
+    output_size_scaler: tuple of scaler_x:int and scaler_y:int
+        Output image size gets divided by (scaler_x, sacaler_y)
 
     Returns
     -------
