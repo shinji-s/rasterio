@@ -83,7 +83,7 @@ def raster_geometry_mask(dataset, shapes, all_touched=False, invert=False,
         pad_x = 0
         pad_y = 0
 
-    affine_scale = Affine.scale(*output_sizer_divider)
+    affine_scale = Affine.scale(*output_size_divider)
 
     try:
         window = geometry_window(dataset, shapes, pad_x=pad_x, pad_y=pad_y)
