@@ -3,13 +3,13 @@
 import logging
 import warnings
 
+from affine import Affine
 import numpy
 
 import rasterio._loading
 with rasterio._loading.add_gdal_dll_directories():
     from rasterio.errors import WindowError
     from rasterio.features import geometry_mask, geometry_window
-    from rasterio.transform import multiply_scaler
 
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def raster_geometry_mask(dataset, shapes, all_touched=False, invert=False,
                          crop=False, pad=False, pad_width=0.5,
-                         output_size_scaler=(1,1)):
+                         output_size_divider=(1,1)):
     """Create a mask from shapes, transform, and optional window within original
     raster.
 
@@ -52,10 +52,9 @@ def raster_geometry_mask(dataset, shapes, all_touched=False, invert=False,
     pad_width : float (opt)
         If pad is set (to maintain back-compatibility), then this will be the
         pixel-size width of the padding around the mask.
-    output_size_scaler: (int, int) (opt)
+    output_size_divider: (int, int) (opt)
         Scales the width and height of the output image. Defaults to (1, 1).
-        The output size will be divided by the value. Useful for performing
-        cropping of an overview in a COG.
+        The output size will be divided by the value.
 
     Returns
     -------
@@ -84,6 +83,8 @@ def raster_geometry_mask(dataset, shapes, all_touched=False, invert=False,
         pad_x = 0
         pad_y = 0
 
+    affine_scale = Affine.scale(*output_sizer_divider)
+
     try:
         window = geometry_window(dataset, shapes, pad_x=pad_x, pad_y=pad_y)
 
@@ -98,25 +99,22 @@ def raster_geometry_mask(dataset, shapes, all_touched=False, invert=False,
 
         # Return an entirely True mask (if invert is False)
         base_size = dataset.shape[-2:]
-        output_size = (base_size[0] // output_size_scaler[0],
-                       base_size[1] // output_size_scaler[1])
+        output_size = (base_size[0] // output_size_divider[1],
+                       base_size[1] // output_size_divider[0])
         mask = numpy.ones(shape=output_size, dtype="bool") * (not invert)
-        return mask, dataset.transform, None
+        return mask, dataset.transform * affine_scale, None
 
     if crop:
-        transform = multiply_scaler(dataset.window_transform(window),
-                                    output_size_scaler)
-        out_shape = (int(window.height) // output_size_scaler[0],
-                     int(window.width)  // output_size_scaler[1])
-        print ('Window   ', window)
-        print ('Transform', transform)
-
+        original_transform = dataset.window_transform(window)
+        height, width = int(window.height), int(window.width)
     else:
         window = None
-        transform = dataset.transform
-        out_shape = (int(dataset.height) // output_size_scaler[0],
-                     int(dataset.width)  // output_size_scaler[1])
+        original_transform = dataset.transform
+        height, width = int(dataset.height), int(dataset.width)
 
+    transform = original_transform * affine_scale
+    out_shape = (height // output_size_divider[1],
+                 width  // output_size_divider[0])
     mask = geometry_mask(shapes, transform=transform, invert=invert,
                          out_shape=out_shape, all_touched=all_touched)
 
@@ -125,7 +123,7 @@ def raster_geometry_mask(dataset, shapes, all_touched=False, invert=False,
 
 def mask(dataset, shapes, all_touched=False, invert=False, nodata=None,
          filled=True, crop=False, pad=False, pad_width=0.5, indexes=None,
-         output_size_scaler=(1, 1)):
+         output_size_divider=(1, 1)):
     """Creates a masked or filled array using input shapes.
     Pixels are masked or set to nodata outside the input shapes, unless
     `invert` is `True`.
@@ -164,8 +162,8 @@ def mask(dataset, shapes, all_touched=False, invert=False, nodata=None,
     indexes : list of ints or a single int (opt)
         If `indexes` is a list, the result is a 3D array, but is
         a 2D array if it is a band index number.
-    output_size_scaler: tuple of scaler_x:int and scaler_y:int
-        Output image size gets divided by (scaler_x, sacaler_y)
+    output_size_divider: tuple of divider_x:int and devider_y:int
+        Output image size gets divided by (divider_x, divider_y)
 
     Returns
     -------
@@ -196,7 +194,7 @@ def mask(dataset, shapes, all_touched=False, invert=False, nodata=None,
 
     shape_mask, transform, window = raster_geometry_mask(
         dataset, shapes, all_touched=all_touched, invert=invert, crop=crop,
-        pad=pad, pad_width=pad_width, output_size_scaler=output_size_scaler)
+        pad=pad, pad_width=pad_width, output_size_divider=output_size_divider)
 
     if indexes is None:
         out_shape = (dataset.count, ) + shape_mask.shape
