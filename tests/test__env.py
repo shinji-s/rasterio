@@ -2,9 +2,14 @@
 
 import pytest
 
-from rasterio._env import GDALDataFinder, PROJDataFinder
+from rasterio._env import (
+    GDALDataFinder,
+    PROJDataFinder,
+    get_proj_data_search_paths,
+    get_gdal_data,
+)
 
-from .conftest import gdal_version, requires_gdal_lt_3
+from .conftest import gdal_version
 
 
 @pytest.fixture
@@ -29,13 +34,13 @@ def mock_fhs(tmpdir):
 @pytest.fixture
 def mock_debian(tmpdir):
     """A fake Debian multi-install system"""
-    tmpdir.ensure("share/gdal/2.3/header.dxf")
-    tmpdir.ensure("share/gdal/2.4/header.dxf")
-    tmpdir.ensure("share/gdal/3.0/header.dxf")
     tmpdir.ensure("share/gdal/3.1/header.dxf")
     tmpdir.ensure("share/gdal/3.2/header.dxf")
     tmpdir.ensure("share/gdal/3.3/header.dxf")
     tmpdir.ensure("share/gdal/3.4/header.dxf")
+    tmpdir.ensure("share/gdal/3.5/header.dxf")
+    tmpdir.ensure("share/gdal/3.6/header.dxf")
+    tmpdir.ensure(f"share/gdal/{gdal_version.major}.{gdal_version.minor}/header.dxf")
     tmpdir.ensure("share/proj/epsg")
     return tmpdir
 
@@ -124,3 +129,13 @@ def test_search_proj_data_wheel(mock_wheel):
 def test_search_proj_data_fhs(mock_fhs):
     finder = PROJDataFinder()
     assert finder.search(str(mock_fhs)) == str(mock_fhs.join("share").join("proj"))
+
+
+def test_get_proj_data_search_paths():
+    assert isinstance(get_proj_data_search_paths(), list)
+
+
+def test_get_gdal_data():
+    gdal_data = get_gdal_data()
+    if gdal_data is not None:
+        assert isinstance(gdal_data, str) and gdal_data

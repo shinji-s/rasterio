@@ -12,6 +12,7 @@ from rasterio.env import setenv
 from rasterio.errors import CRSError
 from rasterio.rio import options
 from rasterio.rio.helpers import resolve_inout
+from rasterio.rio.options import _cb_key_val
 from rasterio.transform import Affine
 from rasterio.warp import (
     reproject, Resampling, SUPPORTED_RESAMPLING, transform_bounds,
@@ -47,27 +48,73 @@ MAX_OUTPUT_HEIGHT = 100000
     '--bounds', '--dst-bounds', 'dst_bounds', nargs=4, type=float, default=None,
     help="Determine output extent from destination bounds: left bottom right top")
 @options.resolution_opt
-@click.option('--resampling',
-              type=click.Choice([r.name for r in SUPPORTED_RESAMPLING]),
-              default='nearest', help="Resampling method.",
-              show_default=True)
-@click.option('--src-nodata', default=None, show_default=True,
-              type=float, help="Manually override source nodata")
-@click.option('--dst-nodata', default=None, show_default=True,
-              type=float, help="Manually override destination nodata")
-@click.option('--threads', type=int, default=1,
-              help='Number of processing threads.')
-@click.option('--check-invert-proj/--no-check-invert-proj', default=True,
-              help='Constrain output to valid coordinate region in dst-crs')
-@click.option('--target-aligned-pixels/--no-target-aligned-pixels', default=False,
-              help='align the output bounds based on the resolution')
+@click.option(
+    "--resampling",
+    type=click.Choice([r.name for r in SUPPORTED_RESAMPLING]),
+    default="nearest",
+    help="Resampling method.",
+    show_default=True,
+)
+@click.option(
+    "--src-nodata",
+    default=None,
+    show_default=True,
+    type=float,
+    help="Manually override source nodata",
+)
+@click.option(
+    "--dst-nodata",
+    default=None,
+    show_default=True,
+    type=float,
+    help="Manually override destination nodata",
+)
+@click.option("--threads", type=int, default=1, help="Number of processing threads.")
+@click.option(
+    "--check-invert-proj/--no-check-invert-proj",
+    default=True,
+    help="Constrain output to valid coordinate region in dst-crs",
+)
+@click.option(
+    "--target-aligned-pixels/--no-target-aligned-pixels",
+    default=False,
+    help="align the output bounds based on the resolution",
+)
 @options.overwrite_opt
 @options.creation_options
+@click.option(
+    "--to",
+    "--wo",
+    "--transformer-option",
+    "--warper-option",
+    "warper_options",
+    metavar="NAME=VALUE",
+    multiple=True,
+    callback=_cb_key_val,
+    help="GDAL warper and coordinate transformer options.",
+)
 @click.pass_context
-def warp(ctx, files, output, driver, like, dst_crs, dimensions, src_bounds,
-         dst_bounds, res, resampling, src_nodata, dst_nodata, threads,
-         check_invert_proj, overwrite, creation_options,
-         target_aligned_pixels):
+def warp(
+    ctx,
+    files,
+    output,
+    driver,
+    like,
+    dst_crs,
+    dimensions,
+    src_bounds,
+    dst_bounds,
+    res,
+    resampling,
+    src_nodata,
+    dst_nodata,
+    threads,
+    check_invert_proj,
+    overwrite,
+    creation_options,
+    target_aligned_pixels,
+    warper_options,
+):
     """
     Warp a raster dataset.
 
@@ -126,10 +173,6 @@ def warp(ctx, files, output, driver, like, dst_crs, dimensions, src_bounds,
         if not res:
             raise click.BadParameter(
                 '--target-aligned-pixels requires a specified resolution')
-        if src_bounds or dst_bounds:
-            raise click.BadParameter(
-                '--target-aligned-pixels cannot be used with '
-                '--src-bounds or --dst-bounds')
 
     # Check invalid parameter combinations
     if like:
@@ -224,8 +267,14 @@ def warp(ctx, files, output, driver, like, dst_crs, dimensions, src_bounds,
                             src_crs = src.crs
                             kwargs = src.bounds._asdict()
                         dst_transform, dst_width, dst_height = calcdt(
-                            src_crs, dst_crs, src.width, src.height,
-                            resolution=res, **kwargs)
+                            src_crs,
+                            dst_crs,
+                            src.width,
+                            src.height,
+                            resolution=res,
+                            **kwargs,
+                            **warper_options
+                        )
                     except CRSError as err:
                         raise click.BadParameter(
                             str(err), param='dst_crs', param_hint='dst_crs')
@@ -285,7 +334,9 @@ def warp(ctx, files, output, driver, like, dst_crs, dimensions, src_bounds,
                 dst_transform = Affine.translation(left, top) * Affine.scale(res, -res)
 
             if target_aligned_pixels:
-                dst_transform, dst_width, dst_height = aligned_target(dst_transform, dst_width, dst_height, res)
+                dst_transform, dst_width, dst_height = aligned_target(
+                    dst_transform, dst_width, dst_height, res
+                )
 
             # If src_nodata is not None, update the dst metadata NODATA
             # value to src_nodata (will be overridden by dst_nodata if it is not None
@@ -347,4 +398,6 @@ def warp(ctx, files, output, driver, like, dst_crs, dimensions, src_bounds,
                     dst_crs=out_kwargs['crs'],
                     dst_nodata=dst_nodata,
                     resampling=resampling,
-                    num_threads=threads)
+                    num_threads=threads,
+                    **warper_options
+                )

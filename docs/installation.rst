@@ -4,7 +4,7 @@ Installation
 Dependencies
 ------------
 
-Rasterio has one C library dependency: ``GDAL >=1.11``. GDAL itself depends on
+Rasterio has one C library dependency: ``GDAL >=3.1``. GDAL itself depends on
 many of other libraries provided by most major operating systems and also
 depends on the non standard GEOS and PROJ4 libraries.
 
@@ -20,7 +20,7 @@ OS X
 ****
 
 Binary wheels with the GDAL, GEOS, and PROJ4 libraries included are available
-for OS X versions 10.7+ starting with Rasterio version 0.17. To install, 
+for OS X versions 10.7+ starting with Rasterio version 0.17. To install,
 run ``pip install rasterio``. These binary wheels are preferred by newer
 versions of pip. If you don't want these wheels and want to install from
 a source distribution, run ``pip install rasterio --no-binary`` instead.
@@ -35,19 +35,23 @@ release.
 Windows
 *******
 
-Binary wheels for rasterio and GDAL are created by Christoph Gohlke and are
-available from his website.
+Binary wheels with the GDAL, GEOS, and PROJ libraries included are available
+for Windows 64bit starting with Rasterio version 1.3. To install,
+run ``pip install rasterio``.
 
-To install rasterio, download both binaries for your system (`rasterio
+Binary wheels for rasterio < 1.3 and GDAL < 3.5 for Windows 64bit and 32bit 
+were created by Christoph Gohlke and are currently available from his website.
+
+To install rasterio < 1.3, download both binaries for your system (`rasterio
 <http://www.lfd.uci.edu/~gohlke/pythonlibs/#rasterio>`__ and `GDAL
 <http://www.lfd.uci.edu/~gohlke/pythonlibs/#gdal>`__) and run something like
 this from the downloads folder:
 
 .. code-block:: console
 
-    $ pip install -U pip 
-    $ pip install GDAL-1.11.2-cp27-none-win32.whl
-    $ pip install rasterio-0.24.0-cp27-none-win32.whl
+    $ pip install -U pip
+    $ pip install GDAL‑3.4.3‑cp311‑cp311‑win32.whl
+    $ pip install rasterio‑1.2.10‑cp311‑cp311‑win32.whl
 
 
 Installing with Anaconda
@@ -56,7 +60,7 @@ Installing with Anaconda
 To install rasterio on the Anaconda Python distribution, please visit the
 `rasterio conda-forge`_ page for install instructions. This build is maintained
 separately from the rasterio distribution on PyPi and packaging issues should
-be addressed on the `rasterio conda-forge`_ issue tracker. 
+be addressed on the `rasterio conda-forge`_ issue tracker.
 
 Installing from the source distribution
 ---------------------------------------
@@ -66,7 +70,7 @@ Rasterio is a Python C extension and to build you'll need a working compiler
 required to run the rasterio setup script. Numpy has to be installed (via the
 indicated requirements file) before rasterio can be installed. See rasterio's
 Travis `configuration
-<https://github.com/mapbox/rasterio/blob/master/.travis.yml>`__ for more
+<https://github.com/rasterio/rasterio/blob/master/.travis.yml>`__ for more
 guidance.
 
 Linux
@@ -118,10 +122,10 @@ With pip
     $ pip install --no-use-pep517 --global-option -I<path to gdal include files> -lgdal_i -L<path to gdal library> .
 
 Note: :code:`--no-use-pep517` is required as pip currently hasn't implemented a
-way for optional arguments to be passed to the build backend when using PEP 517. 
+way for optional arguments to be passed to the build backend when using PEP 517.
 See  `here <https://github.com/pypa/pip/issues/5771>`__. for more details.
 
-Alternatively environment variables (e.g. INCLUDE and LINK) used by MSVC compiler can be used to point 
+Alternatively environment variables (e.g. INCLUDE and LINK) used by MSVC compiler can be used to point
 to include directories and library files.
 
 We have had success compiling code using the same version of Microsoft's

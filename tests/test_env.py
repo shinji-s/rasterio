@@ -3,14 +3,10 @@
 
 import os
 import sys
+from unittest import mock
 
 import boto3
 import pytest
-
-try:
-    from unittest import mock
-except ImportError:
-    import mock
 
 import rasterio
 from rasterio import _env
@@ -21,18 +17,12 @@ from rasterio.errors import EnvError, RasterioIOError, GDALVersionError
 from rasterio.rio.main import main_group
 from rasterio.session import AWSSession, DummySession, OSSSession, SwiftSession, AzureSession
 
-from .conftest import requires_gdal21
+from .conftest import credentials
 
 
-# Custom markers.
-credentials = pytest.mark.skipif(
-    not(boto3.Session()._session.get_credentials()),
-    reason="S3 raster access requires credentials")
-
-
-L8TIF = "s3://landsat-pds/L8/139/045/LC81390452014295LGN00/LC81390452014295LGN00_B1.TIF"
-L8TIFB2 = "s3://landsat-pds/L8/139/045/LC81390452014295LGN00/LC81390452014295LGN00_B2.TIF"
-httpstif = "https://landsat-pds.s3.amazonaws.com/L8/139/045/LC81390452014295LGN00/LC81390452014295LGN00_B1.TIF"
+L8TIF = "s3://sentinel-cogs/sentinel-s2-l2a-cogs/45/C/VQ/2022/11/S2B_45CVQ_20221102_0_L2A/B01.tif"
+L8TIFB2 = "s3://sentinel-cogs/sentinel-s2-l2a-cogs/45/C/VQ/2022/11/S2B_45CVQ_20221102_0_L2A/B02.tif"
+httpstif = "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/45/C/VQ/2022/11/S2B_45CVQ_20221102_0_L2A/B01.tif"
 
 
 def test_gdal_config_accessers():
@@ -168,17 +158,33 @@ def test_ensure_env_credentialled_decorator(monkeypatch, gdalenv):
     monkeypatch.setenv('AWS_SESSION_TOKEN', 'token')
 
     @ensure_env_credentialled
-    def f(path):
+    def f(fp):
         return getenv()
 
-    config = f('s3://foo/bar')
-    assert config['AWS_ACCESS_KEY_ID'] == 'id'
-    assert config['AWS_SECRET_ACCESS_KEY'] == 'key'
-    assert config['AWS_SESSION_TOKEN'] == 'token'
+    config = f("s3://foo/bar")
+    assert config["AWS_ACCESS_KEY_ID"] == "id"
+    assert config["AWS_SECRET_ACCESS_KEY"] == "key"
+    assert config["AWS_SESSION_TOKEN"] == "token"
 
     monkeypatch.undo()
 
 
+def test_ensure_env_credentialled_decorator_fp_kwarg(monkeypatch, gdalenv):
+    """Demonstrate resolution of #2267"""
+    monkeypatch.setenv('AWS_ACCESS_KEY_ID', 'id')
+    monkeypatch.setenv('AWS_SECRET_ACCESS_KEY', 'key')
+    monkeypatch.setenv('AWS_SESSION_TOKEN', 'token')
+
+    @ensure_env_credentialled
+    def f(fp):
+        return getenv()
+
+    config = f(fp="s3://foo/bar")
+    assert config["AWS_ACCESS_KEY_ID"] == "id"
+    assert config["AWS_SECRET_ACCESS_KEY"] == "key"
+    assert config["AWS_SESSION_TOKEN"] == "token"
+
+    monkeypatch.undo()
 def test_no_aws_gdal_config(gdalenv):
     """Trying to set AWS-specific GDAL config options fails."""
     with pytest.raises(EnvError):
@@ -303,7 +309,6 @@ def test_skip_gtiff(gdalenv):
             rasterio.open('tests/data/RGB.byte.tif')
 
 
-@requires_gdal21(reason="S3 access requires 2.1+")
 @credentials
 @pytest.mark.network
 def test_s3_open_with_env(gdalenv):
@@ -313,7 +318,6 @@ def test_s3_open_with_env(gdalenv):
             assert dataset.count == 1
 
 
-@requires_gdal21(reason="S3 access requires 2.1+")
 @credentials
 @pytest.mark.network
 def test_s3_open_with_implicit_env(gdalenv):
@@ -322,7 +326,6 @@ def test_s3_open_with_implicit_env(gdalenv):
         assert dataset.count == 1
 
 
-@requires_gdal21(reason="S3 access requires 2.1+")
 @credentials
 @pytest.mark.network
 def test_s3_open_with_implicit_env_no_boto3(monkeypatch, gdalenv):
@@ -333,7 +336,6 @@ def test_s3_open_with_implicit_env_no_boto3(monkeypatch, gdalenv):
             assert dataset.count == 1
 
 
-@requires_gdal21(reason="S3 access requires 2.1+")
 @credentials
 @pytest.mark.network
 def test_env_open_s3(gdalenv):
@@ -345,7 +347,6 @@ def test_env_open_s3(gdalenv):
             assert dataset.count == 1
 
 
-@requires_gdal21(reason="S3 access requires 2.1+")
 @credentials
 @pytest.mark.network
 def test_env_open_s3_credentials(gdalenv):
@@ -356,7 +357,6 @@ def test_env_open_s3_credentials(gdalenv):
             assert dataset.count == 1
 
 
-@requires_gdal21(reason="S3 access requires 2.1+")
 @credentials
 @pytest.mark.network
 def test_ensured_env_no_credentializing(gdalenv):
@@ -367,7 +367,6 @@ def test_ensured_env_no_credentializing(gdalenv):
             rasterio.open(L8TIFB2)
 
 
-@requires_gdal21(reason="S3 access requires 2.1+")
 @credentials
 @pytest.mark.network
 def test_open_https_vsicurl(gdalenv):
@@ -378,7 +377,6 @@ def test_open_https_vsicurl(gdalenv):
 
 # CLI tests.
 
-@requires_gdal21(reason="S3 access requires 2.1+")
 @credentials
 @pytest.mark.network
 def test_s3_rio_info(runner):
@@ -387,7 +385,6 @@ def test_s3_rio_info(runner):
     assert result.exit_code == 0
 
 
-@requires_gdal21(reason="S3 access requires 2.1+")
 @credentials
 @pytest.mark.network
 def test_https_rio_info(runner):
@@ -420,7 +417,7 @@ def test_ensure_defaults_teardown(gdalenv):
     would quietly reinstate any ``rasterio.env.default_options`` that was
     not modified by the environment.
 
-    https://github.com/mapbox/rasterio/issues/968
+    https://github.com/rasterio/rasterio/issues/968
     """
 
     def _check_defaults():
@@ -525,7 +522,7 @@ def test_gdalversion_class_parse_err():
 
 def test_gdalversion_class_runtime():
     """Test the version of GDAL from this runtime"""
-    GDALVersion.runtime().major >= 1
+    assert GDALVersion.runtime().major >= 3
 
 
 def test_gdalversion_class_cmp():

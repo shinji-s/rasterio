@@ -1,11 +1,43 @@
 # Workaround for issue #378. A pure Python generator.
 
-import numpy
+import numpy as np
+from itertools import islice
 
-import rasterio._loading
-with rasterio._loading.add_gdal_dll_directories():
-    from rasterio.enums import MaskFlags
-    from rasterio.windows import Window
+from rasterio.enums import MaskFlags
+from rasterio.windows import Window
+from rasterio.transform import rowcol
+
+
+def _transform_xy(dataset, xy):
+    # Transform x, y coordinates to row, col
+    # Chunked to reduce calls, thus unnecessary overhead, to rowcol()
+    dt = dataset.transform
+    _xy = iter(xy)
+    while True:
+        buf = tuple(islice(_xy, 0, 256))
+        if not buf:
+            break
+        x, y = rowcol(dt, *zip(*buf))
+        yield from zip(x,y)
+
+def sort_xy(xy):
+    """Sort x, y coordinates by x then y
+
+    Parameters
+    ----------
+    xy : iterable
+        Pairs of x, y coordinates
+
+    Returns
+    -------
+    list
+        A list of sorted x, y coordinates
+    """
+    x, y = tuple(zip(*xy))
+    rv = []
+    for ind in np.lexsort([y, x]):
+        rv.append((x[ind], y[ind]))
+    return rv
 
 
 def sample_gen(dataset, xy, indexes=None, masked=False):
@@ -17,6 +49,9 @@ def sample_gen(dataset, xy, indexes=None, masked=False):
         Opened in "r" mode.
     xy : iterable
         Pairs of x, y coordinates in the dataset's reference system.
+
+        Note: Sorting coordinates can often yield better performance.
+        A sort_xy function is provided in this module for convenience.
     indexes : int or list of int
         Indexes of dataset bands to sample.
     masked : bool, default: False
@@ -31,27 +66,25 @@ def sample_gen(dataset, xy, indexes=None, masked=False):
         those indexes.
 
     """
-    index = dataset.index
     read = dataset.read
+    height = dataset.height
+    width = dataset.width
 
     if indexes is None:
         indexes = dataset.indexes
     elif isinstance(indexes, int):
         indexes = [indexes]
 
-    for x, y in xy:
+    nodata = np.full(len(indexes), (dataset.nodata or 0),  dtype=dataset.dtypes[0])
+    if masked:
+        # Masks for masked arrays are inverted (False means valid)
+        mask = [MaskFlags.all_valid not in dataset.mask_flag_enums[i-1] for i in indexes]
+        nodata = np.ma.array(nodata, mask=mask)
 
-        row_off, col_off = index(x, y)
-
-        if row_off < 0 or col_off < 0 or row_off >= dataset.height or col_off >= dataset.width:
-            data = numpy.ones((len(indexes),), dtype=dataset.dtypes[0]) * (dataset.nodata or 0)
-            if masked:
-                mask = [False if MaskFlags.all_valid in dataset.mask_flag_enums[i - 1] else True for i in indexes]
-                yield numpy.ma.array(data, mask=mask)
-            else:
-                yield data
-
-        else:
-            window = Window(col_off, row_off, 1, 1)
-            data = read(indexes, window=window, masked=masked)
+    for row, col in _transform_xy(dataset, xy):
+        if 0 <= row < height and 0 <= col < width:
+            win = Window(col, row, 1, 1)
+            data = read(indexes, window=win, masked=masked)
             yield data[:, 0, 0]
+        else:
+            yield nodata

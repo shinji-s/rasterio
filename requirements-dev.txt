@@ -4,11 +4,14 @@
 cython~=0.29
 delocate
 hypothesis
+mypy
 numpydoc
 packaging
-pytest~=4.6.0
+pytest
 pytest-cov>=2.2.0
+pytest-randomly==3.10.1
 shapely
 sphinx
+sphinx-click
 sphinx-rtd-theme
 wheel

@@ -9,6 +9,7 @@ from hypothesis import given, assume, settings, HealthCheck
 from hypothesis.strategies import floats, integers
 
 import rasterio
+from rasterio.transform import from_origin
 from rasterio.errors import WindowError
 from rasterio.windows import (
     crop, from_bounds, bounds, transform, evaluate, window_index, shape,
@@ -34,8 +35,7 @@ def assert_window_almost_equals(a, b):
 
 
 def test_window_repr():
-    assert str(Window(0, 1, 4, 2)) == ('Window(col_off=0, row_off=1, width=4, '
-                                       'height=2)')
+    assert str(Window(0, 1, 4, 2)) == ('Window(col_off=0, row_off=1, width=4, height=2)')
 
 
 @settings(suppress_health_check=[HealthCheck.filter_too_much])
@@ -95,19 +95,25 @@ def test_window_toranges(col_off, row_off, width, height):
 
 
 @settings(suppress_health_check=[HealthCheck.filter_too_much])
-@given(col_off=F_OFF, row_off=F_OFF, width=F_LEN, height=F_LEN)
-def test_window_toslices(col_off, row_off, width, height):
-    """window.toslices() should match inputs"""
-
-    expected_slices = (slice(row_off, row_off + height),
-                       slice(col_off, col_off + width))
-
-    slices = Window(col_off, row_off, width, height).toslices()
-
-    assert np.allclose(
-        [(s.start, s.stop) for s in slices],
-        [(s.start, s.stop) for s in expected_slices]
-    )
+@given(
+    col_off=F_OFF,
+    row_off=F_OFF,
+    width=F_LEN,
+    height=F_LEN,
+    arr_width=I_LEN,
+    arr_height=I_LEN,
+)
+def test_window_toslices(col_off, row_off, width, height, arr_width, arr_height):
+    """window.toslices() should match inputs and be properly end indexed (see gh-2378)"""
+    row_slice, col_slice = Window(col_off, row_off, width, height).toslices()
+    assert isinstance(row_slice.start, int)
+    assert row_slice.start == int(math.floor(row_off)) or row_slice.start == 0
+    assert isinstance(row_slice.stop, int)
+    assert row_slice.stop == int(math.ceil(row_off + height)) or row_slice.stop == 0
+    assert isinstance(col_slice.start, int)
+    assert col_slice.start == int(math.floor(col_off)) or col_slice.start == 0
+    assert isinstance(col_slice.stop, int)
+    assert col_slice.stop == int(math.ceil(col_off + width)) or col_slice.stop == 0
 
 
 @settings(suppress_health_check=[HealthCheck.filter_too_much])
@@ -311,21 +317,29 @@ def test_window_from_bounds(path_rgb_byte_tif):
         height = src.height
         width = src.width
 
-        assert_window_almost_equals(from_bounds(
-            left + EPS, bottom + EPS, right - EPS, top - EPS, src.transform,
-            height, width), Window.from_slices((0, height), (0, width)))
+        assert_window_almost_equals(
+            from_bounds(
+                left + EPS, bottom + EPS, right - EPS, top - EPS, src.transform
+            ),
+            Window.from_slices((0, height), (0, width)),
+        )
 
-        assert_window_almost_equals(from_bounds(
-            left, top - 2 * dy - EPS, left + 2 * dx - EPS, top, src.transform,
-            height, width), Window.from_slices((0, 2), (0, 2)))
+        assert_window_almost_equals(
+            from_bounds(
+                left, top - 2 * dy - EPS, left + 2 * dx - EPS, top, src.transform
+            ),
+            Window.from_slices((0, 2), (0, 2)),
+        )
 
         # boundless
         assert_window_almost_equals(
-            from_bounds(left - 2 * dx, top - 2 * dy, left + 2 * dx,
-                        top + 2 * dy, src.transform, height=height,
-                        width=width),
-            Window.from_slices((-2, 2), (-2, 2), boundless=True, height=height,
-                               width=width))
+            from_bounds(
+                left - 2 * dx, top - 2 * dy, left + 2 * dx, top + 2 * dy, src.transform
+            ),
+            Window.from_slices(
+                (-2, 2), (-2, 2), boundless=True, height=height, width=width
+            ),
+        )
 
 
 def test_window_float(path_rgb_byte_tif):
@@ -333,26 +347,25 @@ def test_window_float(path_rgb_byte_tif):
     with rasterio.open(path_rgb_byte_tif) as src:
         left, bottom, right, top = src.bounds
         dx, dy = src.res
-        height = src.height
-        width = src.width
 
-        assert_window_almost_equals(from_bounds(
-            left, top - 400, left + 400, top, src.transform,
-            height, width), Window.from_slices((0, 400 / src.res[1]), (0, 400 / src.res[0])))
+        assert_window_almost_equals(
+            from_bounds(left, top - 400, left + 400, top, src.transform),
+            Window.from_slices((0, 400 / src.res[1]), (0, 400 / src.res[0])),
+        )
 
 
 def test_window_bounds_south_up():
     identity = Affine.identity()
     assert_window_almost_equals(
-        from_bounds(0, 10, 10, 0, identity, 10, 10),
-        Window(0, 0, 10, 10))
+        from_bounds(0, 10, 10, 0, identity), Window(0, 0, 10, 10)
+    )
 
 
 def test_window_bounds_north_up():
     transform = Affine.translation(0.0, 10.0) * Affine.scale(1.0, -1.0) * Affine.identity()
     assert_window_almost_equals(
-        from_bounds(0, 0, 10, 10, transform, 10, 10),
-        Window(0, 0, 10, 10))
+        from_bounds(0, 0, 10, 10, transform), Window(0, 0, 10, 10)
+    )
 
 
 def test_window_transform_function(path_rgb_byte_tif):
@@ -456,17 +469,34 @@ def test_read_with_window_class(path_rgb_byte_tif):
         assert subset.shape == (10, 10)
 
 
-def test_data_window_invalid_arr_dims():
+def test_data_window_invalid_4d():
     """An array of more than 3 dimensions is invalid."""
-    arr = np.ones((3, 3, 3, 3))
+    # Test > 3 dims
     with pytest.raises(WindowError):
-        get_data_window(arr)
+        get_data_window(np.ones((3, 3, 3, 3)))
 
 
-def test_data_window_full():
+def test_data_window_invalid_0d():
+    """An array of less than 1 dimension is invalid."""
+    # Test < 1 dim
+    with pytest.raises(WindowError):
+        get_data_window(np.ones(()))
+
+
+def test_data_window_full_2d():
     """Get window of entirely valid data array."""
     arr = np.ones((3, 3))
     window = get_data_window(arr)
+    assert window == Window.from_slices((0, 3), (0, 3))
+
+
+def test_data_window_full_1d():
+    window = get_data_window(np.ones(3))
+    assert window == Window.from_slices((0, 3), (0, 0))
+
+
+def test_data_window_full_3d():
+    window = get_data_window(np.ones((3, 3, 3)))
     assert window == Window.from_slices((0, 3), (0, 3))
 
 
@@ -475,6 +505,14 @@ def test_data_window_nodata():
     arr = np.ones((3, 3))
     arr[0, :] = 0
     window = get_data_window(arr, nodata=0)
+    assert window == Window.from_slices((1, 3), (0, 3))
+
+
+def test_data_window_nodata_nan():
+    """Get window of arr with nodata."""
+    arr = np.ones((3, 3))
+    arr[0, :] = np.nan
+    window = get_data_window(arr, nodata=np.nan)
     assert window == Window.from_slices((1, 3), (0, 3))
 
 
@@ -563,16 +601,6 @@ def test_round_window_boundless(path_alpha_tif):
         assert rounded_window.width % width_shape == 0
 
 
-def test_round_lengths_no_op_error():
-    with pytest.raises(WindowError):
-        Window(0, 0, 1, 1).round_lengths(op='lolwut')
-
-
-def test_round_offsets_no_op_error():
-    with pytest.raises(WindowError):
-        Window(0, 0, 1, 1).round_offsets(op='lolwut')
-
-
 def test_window_hashable():
     a = Window(0, 0, 10, 10)
     b = Window(0, 0, 10, 10)
@@ -584,7 +612,7 @@ def test_window_hashable():
 def test_from_bounds_requires_transform():
     """Test fix for issue 1857"""
     with pytest.raises(WindowError):
-        from_bounds(-105, 40, -100, 45, height=100, width=100)
+        from_bounds(-105, 40, -100, 45)
 
 
 def test_from_bounds_rotation():
@@ -598,9 +626,7 @@ def test_from_bounds_rotation():
         * Affine.translation(-sqrt2, sqrt2)
         * Affine.scale(sqrt2 / 2.0, -sqrt2 / 2.0)
     )
-    win = from_bounds(
-        -2.0, -2.0, 2.0, 2.0, transform=transform, height=height, width=width,
-    )
+    win = from_bounds(-2.0, -2.0, 2.0, 2.0, transform=transform)
     assert win.col_off == pytest.approx(-2.0)
     assert win.row_off == pytest.approx(-2.0)
     assert win.width == pytest.approx(2.0 * width)
@@ -654,3 +680,13 @@ def test_union_boundless_above():
     assert uw.height == 4
     assert uw.width == 2
     assert uw.col_off == 0
+
+
+def test_nonintersecting_window_index():
+    """See gh-2378"""
+    t = from_origin(0, 0, 1, 1)
+    w = from_bounds(-3, -3, -1, -1, t)
+    data = np.arange(25).reshape(5, 5)
+    selection = data[window_index(w, height=5, width=5)]
+    assert selection.shape == (2, 0)
+    assert selection.flatten().tolist() == []

@@ -1,15 +1,302 @@
 Changes
 =======
 
-1.3.0 (TBD)
------------
+1.3.5 (2023-01-25)
+------------------
 
+Bug fixes:
+
+- Fixed plot.show(adjust=True) with respect to 16-bit integer data (#2733).
+- Align offsets in rio-clip as well as height and width to match gdal_translate
+  with -projwin (#2729).
+- Allow rio-warp's --target-aligned-pixels option to be used with --dst-bounds
+  or --src-bounds (#2729).
+- Normalize paths before calling os.add_dll_directory on Windows (#2705).
+- Affine version 2.4.0 exposes a bug in Rasterio's test_deprecated.py module, a
+  test than erroneously fails. This test has been fixed and passes with all
+  versions of the affine module.
+- Better, recursive cleanup of MemoryFile /vsimem/ directories.
+- Python ignores SIGPIPE by default. By never catching BrokenPipeError via
+  `except Exception` when, for example, piping the output of rio-shapes to
+  the Unix head program, we avoid getting an unhandled BrokenPipeError message
+  when the interpreter shuts down (#2689).
+- Fixes for unsigned access to S3 (#2688, backport of #2669).
+- Ignore blockysize when converting untiled datasets to tiled datasets (#2687,
+  backport of #2678).
+
+1.3.4 (2022-11-16)
+------------------
+
+This version is good for use with GDAL 3.6.0 as well as previous versions.
+
+Changes:
+
+- Resampling tests have been updated to account for changes in GDAL 3.6.0
+  (#2653).
+- Variables in TransformerBase.xy have been renamed for better clarity (#2609).
+- Avoid use of a fixed port for the warp test server (#2619).
+
+Bug fixes:
+
+- Use Python long for FilePath VSI plugin's file position (#2652).
+- In the case that a GDAL function returns NULL but doesn't set an error, we
+  now raise SystemError instead of silently failing (#2645).
+- Azure storage access key can be taken from the environment if not explicitly
+  provided to AzureSession (#2637).
+- Skip empty parts of PATH on Windows when adding DLL directories (#2626).
+- get_data_window is fixed for the case where the nodata value is nan (#2629).
+- Ensure that GTiff, not COG, driver is used by default for TIFFs (#2634).
+
+1.3.3 (2022-10-19)
+------------------
+
+Packaging:
+
+The rasterio._loading module, which supports DLL loading on Windows,
+has been moved into __init__.py and is no longer used anywhere else
+(#2594).
+
+Bug fixes:
+
+- GeoTIFF profiles combining tiled=False and a defined blockysize are now
+  supported (#2599).
+- URLs with // in the query string are now properly parsed (#2603).
+- Rasterio's Python file VSI plugin now sets the position of the underlying
+  stream to 0 on close, resolving #2550.
+
+1.3.2 (2022-08-19)
+------------------
+
+Packaging:
+
+1.3.1 was released from a branch lacking the advertised bug fixes. 1.3.2
+contains the fixes listed under 1.3.1.
+
+1.3.1 (2022-08-17)
+------------------
+
+Packaging:
+
+Wheels for 1.3.1 are built using the version of rasterio-wheels dated
+2022-08-17 and include PROJ 9.0.1 and GDAL 3.5.1.
+
+Bug fixes:
+
+- get_data_window has been improved and extended to 1D (#2510).
+- Broadcasting of coordinates in transform.xy has been restored (#2538).
+- A bug in nodata filling (#2474) has been fixed by patching GDAL (wheels
+  only).
+- Support for PROJ_DATA has been added (#2530).
+- Non-informative errors arising from opening a dataset in write mode are
+  silenced (#2525).
+- N-D arrays are once again accepted by sampling.sample_gen (#2547).
+- MemoryDataset's memory layout has been fixed to properly support
+  non-contiguous data (#2512).
+
+1.3.0.post1 (2022-08-09)
+------------------------
+
+This version corrects errors made in building binary wheels for 1.3.0. There
+are no bug fixes or new features in this version.
+
+1.3.0 (2022-07-05)
+------------------
+
+Bug fixes:
+
+- Temporarily restore rasterio.parse_path (wrapper with a warning).
+- In 1.3b3, rasterio.dtypes.uint64 mapped to 'uint32'. Now it correctly maps to
+  'uint64' (reported in #2502).
+
+1.3b3 (2022-06-27)
+------------------
+
+Bug fixes:
+
+- A bottleneck in construction of non-EPSG CRS objects has been fixed (#2488).
+- The last runtime checks for GDAL version 3.1+ have been removed (#2463).
+
+1.3b2 (2022-06-22)
+------------------
+
+Changes:
+
+- The merge tool has new "sum" and "count" merge methods (#2457).
+
+Bug fixes:
+
+- Some GDAL methods may set a failure level error while also succeeding,
+  according to their return value. We now ensure that callers of these methods
+  can clear any leftover errors (#2487).
+
+Linux and macOS wheels for 1.3b1 are built using the version of rasterio-wheels
+dated 2022-06-21.
+
+1.3b1 (2022-05-10)
+------------------
+
+New features:
+
+- A dataset's write method now accepts Numpy masked arrays and has a "masked"
+  keyword argument. In this case, if masked is False, the masked array's filled
+  method is called with the dataset's nodata value or else the masked array's
+  fill value. If the masked argument is True, the dataset's write_mask method
+  is called.
+
+Changes:
+
+- Various decorators requiring a GDAL version of 2+ have been deleted. Rasterio
+  now absolutely requires GDAL 3.1+ (#2452).
+
+Packaging:
+
+Wheels for 1.3b1 are built using the version of rasterio-wheels dated
+2022-05-10.
+
+1.3a4 (2022-04-20)
+------------------
+
+Deprecations:
+
+- The precision keyword arguments of methods in rasterio.transform,
+  rasterio.windows, and rasterio.merge are unused and will be removed in
+  version 2.0. The --precision option of rio-merge is similarly deprecated
+  (#2432).
+- The rasterio.path module will be removed in version 1.4 and a deprecation
+  warning is issued when the module is imported (#2423).
+
+New features:
+
+- Datasets have a new statistics method that computes the minimum, maximum,
+  mean, and standard deviation of a raster band's data, matching the output of
+  gdalinfo (#2441).
+- The rio-warp CLI command now takes --wo (--warper-option) and --to
+  (--transformer-option) options, allowing the use of PROJ coordinate
+  transformation pipelines like "--to coordinate_operation=proj=pipeline"
+  (#2438).
+
+Changes:
+
+- The Python file VSI plugin is now created and installed at the same time
+  other GDAL drivers are registered (#2435).
+- Various optimizations for sample_gen() (#2338).
+- Update Cython property declarations to modern style (#2316).
+- The rasterio.path module has been moved to rasterio._path and all its member
+  made private (#2423). A new version of rasterio.path temporarily provides
+  aliases to maintain compatibility.
+
+Bug fixes:
+
+- Rasterio's warper is fixed such that it can support reprojection to a
+  specific dataset band (#2369).
+- Erroneously overlapping slices (reported in #2378) are now prevented by
+  ensuring that slice indexes with negative values are set to zero (#2434).
+- Prevent erroneous sign flip in a south-up dataset's res property (#2370).
+- Allow DatasetReader and DatasetWriter to take string filenames and URLs
+  (#2426).
+- Support for compound EPSG CRS has been added (#2425).
+- Z coordinates are no longer ignored when transforming using RPCs (#2422).
+- Integer overflow errors in CRS.from_epsg are caught and CRSError is raised
+  (#2395).
+
+1.3a3 (2022-02-04)
+------------------
+
+New features:
+
+- The CRS class has been added to rasterio.__all__.
+- Python file objects and file-like objects from, for example, fsspec are
+  adapted for opening to get a dataset without copying file data to a
+  MemoryFile (#2141).
+
+Bug fixes:
+
+- Fix bug in usage of numpy 1.14 (#2377).
+- rasterio.open returns a dataset accessor and never a
+  contextlib._GeneratorContextManager for all kinds of input (#2360).
+- Fix the "adjust" keyword argument of rasterio.plot.show (#2359).
+- Preserve origin when scaling in creating a WarpedVRT (#2364).
+- Exceptions are no longer raised for a category of errors emitted from
+  warp-related GDAL functions (#2353).
+- Enable unsafe casting for copyto in the merge tool (#2265).
+
+Packaging:
+
+Wheels for 1.3a3 are built using the version of rasterio-wheels dated
+2022-02-04. Library versions include GDAL 3.4.1, PROJ 8.2.1, and GEOS 3.10.2.
+
+1.3a2 (2021-10-19)
+------------------
+
+New features:
+
+- The InMemoryRaster class in rasterio._io has been removed and replaced by a
+  more direct and efficient wrapper around numpy arrays (#2301).
+- Add support for PROJ JSON based interchange for CRS (#2212).
+  CRS.to_dict(proj_json=True) returns a PROJ JSON style dict and CRS.from_dict()
+  will accept a PROJ JSON style dict. PROJ JSON text is accepted by
+  CRS.from_user_input().
+
+1.3a1 (2021-10-14)
+------------------
+
+Note: building from source now requires Cython (#2016).
+
+New features:
+
+- More efficient window intersection and union (#2164).
+- New Affine, GCP, and RFC transformer classes (#2225).
+- Add support for enum and tuple type creation options (#2102)
+
+Bug fixes:
+
+- Standardize rounding of window lengths and offsets to match GDAL (#2311).
+- Allow addition of subdatasets to GPKG rasters opened in "w" mode with the
+  APPEND_SUBDATASET creation option (#2300).
 - WarpedVRT: Remove deprecated dst_* parameters (#2197).
-- Building from source now requires Cython (#2016).
 - Add GDAL DLL directory to DLL search path on Windows and Python >= 3.8.
   DLLs will be loaded from .libs (for wheels) or from directories in PATH
   environment variable.
 - Add version to CRS.to_wkt() for WKT2 support (#2122).
+
+1.2.10 (2021-10-11)
+-------------------
+
+- Raise WarpOperationError if ChunkAndWarp* do not succeed instead of silently
+  failing to write to the warp output dataset (#2305).
+
+1.2.9 (2021-10-01)
+------------------
+
+- Compute geometry_window more accurately and tightly for rotated rasters,
+  fixing a regression introduced in 1.2.1 (#2303).
+- Copy mask to destination in rio-clip and rio-convert (#2232).
+- Use a default 70% confidence threshold when matching CRS to definitions in
+  authority files (#2293). The confidence threshold can be defined when calling
+  to_epsg and to_authority, which partially addressed the issue reported in
+  #2290.
+
+1.2.8 (2021-09-09)
+------------------
+
+- Correct for the sense of OCTTransform's return value (#2287).
+- Fix a regression in the rasterio.transform module's xy and rowcol functions
+  (#2283).
+
+1.2.7 (2021-09-07)
+------------------
+
+- CRS objects are now compared to the EPSG authority using OSRFindMatches for
+  compatibility with GDAL 3.3.2 (#2279).
+- Allow open's fp keyword argument to pass the credential decorator (#2267).
+- Fix a copy-paste bug in features.geometry_window() affecting Y-axis padding
+  (#2266).
+- Note upcoming deprecation of the height and width parameters of
+  rasterio.windows.from_bounds() and stop using these parameters in project
+  code and tests.
+- The transform.xy and transform.rowcol functions now return a pair of
+  single-element lists if passed a pair of single-element lists. This was the
+  original behavior, but was broken in version 1.2.1 (#2242).
 
 1.2.6 (2021-06-22)
 ------------------

@@ -5,8 +5,6 @@ import pytest
 import rasterio
 from rasterio.enums import ColorInterp
 
-from .conftest import requires_gdal22
-
 
 def test_cmyk_interp(tmpdir):
     """A CMYK TIFF has cyan, magenta, yellow, black bands."""
@@ -26,8 +24,6 @@ def test_cmyk_interp(tmpdir):
             ColorInterp.black)
 
 
-@requires_gdal22(reason="Some versions prior to 2.2.2 segfault on a Mac OSX "
-                        "Homebrew GDAL")
 def test_ycbcr_interp(tmpdir):
     """A YCbCr TIFF has red, green, blue bands."""
     with rasterio.open('tests/data/RGB.byte.tif') as src:
@@ -89,7 +85,7 @@ def test_set_colorinterp_all(path_4band_no_colorinterp, ci):
     """Test setting with all color interpretations."""
 
     if ci.value == 1:
-        pytest.xfail("Setting colorinterp to gray fails with GDAL 2.3, see https://github.com/mapbox/rasterio/issues/1234")
+        pytest.xfail("Setting colorinterp to gray fails with GDAL 2.3, see https://github.com/rasterio/rasterio/issues/1234")
 
     with rasterio.open(path_4band_no_colorinterp, 'r+') as src:
         all_ci = list(src.colorinterp)

@@ -21,20 +21,13 @@ cdef class BufferedDatasetWriterBase(DatasetWriterBase):
     pass
 
 
-cdef class InMemoryRaster:
-    cdef GDALDatasetH _hds
-    cdef double gdal_transform[6]
-    cdef int* band_ids
-    cdef np.ndarray _image
-    cdef object crs
-    cdef object transform  # this is an Affine object.
-
-    cdef GDALDatasetH handle(self) except NULL
-    cdef GDALRasterBandH band(self, int) except NULL
+cdef class MemoryDataset(DatasetWriterBase):
+    cdef np.ndarray _array
 
 
 cdef class MemoryFileBase:
     cdef VSILFILE * _vsif
+    cdef public object _env
 
 
 ctypedef np.uint8_t DTYPE_UBYTE_t

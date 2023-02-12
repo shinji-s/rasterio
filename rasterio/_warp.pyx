@@ -1,9 +1,10 @@
-# distutils: language = c++
+# distutils: language=c++
 
 """Raster and vector warping and reprojection."""
 
 from collections import UserDict
 from collections.abc import Mapping
+from contextlib import ExitStack
 import logging
 import uuid
 import warnings
@@ -13,7 +14,7 @@ from affine import Affine, identity
 import numpy as np
 
 import rasterio
-from rasterio._base import gdal_version, _transform
+from rasterio._base import _transform
 from rasterio._base cimport open_dataset
 from rasterio._err import (
     CPLE_BaseError, CPLE_IllegalArgError, CPLE_NotSupportedError,
@@ -26,30 +27,25 @@ from rasterio.crs import CRS
 from rasterio.errors import (
     GDALOptionNotImplementedError,
     DriverRegistrationError, CRSError, RasterioIOError,
-    RasterioDeprecationWarning, WarpOptionsError, WarpedVRTError)
+    RasterioDeprecationWarning, WarpOptionsError, WarpedVRTError,
+    WarpOperationError)
 from rasterio.transform import Affine, from_bounds, guard_transform, tastes_like_gdal
 
 cimport cython
 cimport numpy as np
 from libc.math cimport HUGE_VAL
 
-from rasterio._base cimport _osr_from_crs, get_driver_name, _safe_osr_release
-from rasterio._err cimport exc_wrap_pointer, exc_wrap_int
+from rasterio._base cimport get_driver_name
+from rasterio._err cimport exc_wrap, exc_wrap_pointer, exc_wrap_int
 from rasterio._io cimport (
-    DatasetReaderBase, InMemoryRaster, in_dtype_range, io_auto)
+    DatasetReaderBase, MemoryDataset, in_dtype_range, io_auto)
 from rasterio._features cimport GeomBuilder, OGRGeomBuilder
-
+from rasterio.crs cimport CRS
 
 log = logging.getLogger(__name__)
 
 # Gauss (7) is not supported for warp
-SUPPORTED_RESAMPLING = [r for r in Resampling if r.value < 7]
-GDAL2_RESAMPLING = [r for r in Resampling if r.value > 7 and r.value <= 12]
-if GDALVersion.runtime().at_least('2.0'):
-    SUPPORTED_RESAMPLING.extend(GDAL2_RESAMPLING)
-# sum supported since GDAL 3.1
-if GDALVersion.runtime().at_least('3.1'):
-    SUPPORTED_RESAMPLING.append(Resampling.sum)
+SUPPORTED_RESAMPLING = [r for r in Resampling if r.value != 7 and r.value <= 13]
 # rms supported since GDAL 3.3
 if GDALVersion.runtime().at_least('3.3'):
     SUPPORTED_RESAMPLING.append(Resampling.rms)
@@ -70,14 +66,15 @@ cdef object _transform_single_geom(
 ):
     cdef OGRGeometryH src_geom = NULL
     cdef OGRGeometryH dst_geom = NULL
+
     try:
-        src_geom = OGRGeomBuilder().build(single_geom)
+        src_geom = exc_wrap_pointer(OGRGeomBuilder().build(single_geom))
         dst_geom = exc_wrap_pointer(
             factory.transformWithOptions(
                 <const OGRGeometry *>src_geom,
                 <OGRCoordinateTransformation *>transform,
                 options))
-
+    else:
         result = GeomBuilder().build(dst_geom)
     finally:
         OGR_G_DestroyGeometry(dst_geom)
@@ -85,8 +82,7 @@ cdef object _transform_single_geom(
 
     if precision >= 0:
         # TODO: Geometry collections.
-        result['coordinates'] = recursive_round(result['coordinates'],
-                                                precision)
+        result['coordinates'] = recursive_round(result['coordinates'], precision)
 
     return result
 
@@ -96,27 +92,13 @@ def _transform_geom(
         int precision):
     """Return a transformed geometry."""
     cdef char **options = NULL
-    cdef OGRSpatialReferenceH src = NULL
-    cdef OGRSpatialReferenceH dst = NULL
     cdef OGRCoordinateTransformationH transform = NULL
     cdef OGRGeometryFactory *factory = NULL
 
-    src = _osr_from_crs(src_crs)
-    dst = _osr_from_crs(dst_crs)
+    cdef CRS src = CRS.from_user_input(src_crs)
+    cdef CRS dst = CRS.from_user_input(dst_crs)
 
-    try:
-        transform = exc_wrap_pointer(OCTNewCoordinateTransformation(src, dst))
-    finally:
-        _safe_osr_release(src)
-        _safe_osr_release(dst)
-
-    # GDAL cuts on the antimeridian by default and using different
-    # logic in versions >= 2.2.
-    if GDALVersion().runtime() < GDALVersion.parse('2.2'):
-        valb = str(antimeridian_offset).encode('utf-8')
-        options = CSLSetNameValue(options, "DATELINEOFFSET", <const char *>valb)
-        if antimeridian_cutting:
-            options = CSLSetNameValue(options, "WRAPDATELINE", "YES")
+    transform = exc_wrap_pointer(OCTNewCoordinateTransformation(src._osr, dst._osr))
 
     factory = new OGRGeometryFactory()
     try:
@@ -359,8 +341,8 @@ def _reproject(
             in_transform = in_transform.translation(eps, eps)
         return in_transform
 
-    cdef InMemoryRaster mem_raster = None
-    cdef InMemoryRaster src_mem = None
+    cdef MemoryDataset mem_raster = None
+    cdef MemoryDataset src_mem = None
 
     try:
 
@@ -380,11 +362,12 @@ def _reproject(
                 source = source.reshape(1, *source.shape)
             src_count = source.shape[0]
             src_bidx = range(1, src_count + 1)
-            src_mem = InMemoryRaster(image=source,
+            src_mem = MemoryDataset(source,
                                          transform=format_transform(src_transform),
                                          gcps=gcps,
                                          rpcs=rpcs,
-                                         crs=src_crs)
+                                         crs=src_crs, 
+                                         copy=True)
             src_dataset = src_mem.handle()
 
         # If the source is a rasterio MultiBand, no copy necessary.
@@ -428,7 +411,7 @@ def _reproject(
                     raise ValueError("Invalid destination shape")
                 dst_bidx = src_bidx
 
-            mem_raster = InMemoryRaster(image=destination, transform=format_transform(dst_transform), crs=dst_crs)
+            mem_raster = MemoryDataset(destination, transform=format_transform(dst_transform), crs=dst_crs)
             dst_dataset = mem_raster.handle()
 
             if dst_alpha:
@@ -481,7 +464,7 @@ def _reproject(
     # okay.
     for key, val in kwargs.items():
         key = key.upper().encode('utf-8')
-        if key == b"RPC_DEM":
+        if key in {b"RPC_DEM", b"COORDINATE_OPERATION"}:
             # don't .upper() since might be a path
             val = str(val).encode('utf-8')
 
@@ -544,9 +527,16 @@ def _reproject(
     cdef GDALRasterBandH hBand = NULL
 
     psWOptions = create_warp_options(
-        <GDALResampleAlg>resampling, src_nodata,
-        dst_nodata, src_count, dst_alpha, src_alpha, warp_mem_limit, <GDALDataType>working_data_type,
-        <const char **>warp_extras)
+        <GDALResampleAlg>resampling,
+        src_nodata,
+        dst_nodata,
+        src_count,
+        dst_alpha,
+        src_alpha,
+        warp_mem_limit,
+        <GDALDataType>working_data_type,
+        <const char **>warp_extras
+    )
 
     psWOptions.pfnTransformer = pfnTransformer
     psWOptions.pTransformerArg = hTransformArg
@@ -567,9 +557,11 @@ def _reproject(
     cdef int cols
 
     try:
-
         exc_wrap_int(oWarper.Initialize(psWOptions))
-        rows, cols = destination.shape[-2:]
+        if isinstance(destination, tuple):
+            rows, cols = destination[3]
+        else:
+            rows, cols = destination.shape[-2:]
 
         log.debug(
             "Chunk and warp window: %d, %d, %d, %d.",
@@ -577,10 +569,15 @@ def _reproject(
 
         if num_threads > 1:
             with nogil:
-                oWarper.ChunkAndWarpMulti(0, 0, cols, rows)
+                err = oWarper.ChunkAndWarpMulti(0, 0, cols, rows)
         else:
             with nogil:
-                oWarper.ChunkAndWarpImage(0, 0, cols, rows)
+                err = oWarper.ChunkAndWarpImage(0, 0, cols, rows)
+
+        try:
+            exc_wrap_int(err)
+        except CPLE_BaseError as base:
+            raise WarpOperationError("Chunk and warp failed") from base
 
         if dtypes.is_ndarray(destination):
             exc_wrap_int(io_auto(destination, dst_dataset, 0))
@@ -591,34 +588,44 @@ def _reproject(
             GDALDestroyApproxTransformer(hTransformArg)
         else:
             GDALDestroyGenImgProjTransformer(hTransformArg)
+
         GDALDestroyWarpOptions(psWOptions)
         CPLFree(imgProjOptions)
+
         if mem_raster is not None:
             mem_raster.close()
+
         if src_mem is not None:
             src_mem.close()
 
 
-def _calculate_default_transform(src_crs, dst_crs, width, height,
-                                 left=None, bottom=None, right=None, top=None,
-                                 gcps=None, rpcs=None, **kwargs):
+def _calculate_default_transform(
+    src_crs,
+    dst_crs,
+    width,
+    height,
+    left=None,
+    bottom=None,
+    right=None,
+    top=None,
+    gcps=None,
+    rpcs=None,
+    **kwargs
+):
     """Wraps GDAL's algorithm."""
     cdef void *hTransformArg = NULL
     cdef int npixels = 0
     cdef int nlines = 0
     cdef double extent[4]
     cdef double geotransform[6]
-    cdef OGRSpatialReferenceH osr = NULL
     cdef char *wkt = NULL
     cdef GDALDatasetH hds = NULL
     cdef char **imgProjOptions = NULL
     cdef char **papszMD = NULL
+    cdef bint bUseApproxTransformer = True
 
     extent[:] = [0.0, 0.0, 0.0, 0.0]
     geotransform[:] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-
-    # Make an in-memory raster dataset we can pass to
-    # GDALCreateGenImgProjTransformer().
 
     if all(x is not None for x in (left, bottom, right, top)):
         transform = from_bounds(left, bottom, right, top, width, height)
@@ -628,72 +635,74 @@ def _calculate_default_transform(src_crs, dst_crs, width, height,
     else:
         transform = None
 
-    try:
-        osr = _osr_from_crs(dst_crs)
-        exc_wrap_int(OSRExportToWkt(osr, &wkt))
-    except CPLE_BaseError as exc:
-        raise CRSError("Could not convert to WKT. {}".format(str(exc)))
-    finally:
-        _safe_osr_release(osr)
-
-    if isinstance(src_crs, str):
-        src_crs = CRS.from_string(src_crs)
-    elif isinstance(src_crs, dict):
-        src_crs = CRS(**src_crs)
-
-    vrt_doc = _suggested_proxy_vrt_doc(width, height, transform=transform, crs=src_crs, gcps=gcps).decode('ascii')
-
+    dst_crs = CRS.from_user_input(dst_crs)
+    wkt_b = dst_crs.to_wkt().encode('utf-8')
+    wkt = wkt_b
+    if src_crs is not None:
+        src_crs = CRS.from_user_input(src_crs)
+    # The transformer at the heart of this function requires a dataset.
+    # We use an in-memory VRT dataset.
+    vrt_doc = _suggested_proxy_vrt_doc(
+        width,
+        height,
+        transform=transform,
+        crs=src_crs,
+        gcps=gcps
+    ).decode('utf-8')
+    hds = open_dataset(vrt_doc, 0x00 | 0x02 | 0x04, ['VRT'], {}, None)
     try:
         imgProjOptions = CSLSetNameValue(imgProjOptions, "GCPS_OK", "TRUE")
         imgProjOptions = CSLSetNameValue(imgProjOptions, "MAX_GCP_ORDER", "0")
         imgProjOptions = CSLSetNameValue(imgProjOptions, "DST_SRS", wkt)
         for key, val in kwargs.items():
             key = key.upper().encode('utf-8')
-            if key == b"RPC_DEM":
-                # don't .upper() since might be a path
+
+            if key in {b"RPC_DEM", b"COORDINATE_OPERATION"}:
+                # don't .upper() since might be a path.
                 val = str(val).encode('utf-8')
             else:
                 val = str(val).upper().encode('utf-8')
-            imgProjOptions = CSLSetNameValue(
-                imgProjOptions, <const char *>key, <const char *>val)
-            log.debug("Set _calculate_default_transform Transformer option {0!r}={1!r}".format(key, val))
-        hds = open_dataset(vrt_doc, 0x00 | 0x02 | 0x04, ['VRT'], {}, None)
+
+            imgProjOptions = CSLSetNameValue(imgProjOptions, <const char *>key, <const char *>val)
+            log.debug("Set image projection option {0!r}={1!r}".format(key, val))
+
         if rpcs:
             if hasattr(rpcs, 'to_gdal'):
                 rpcs = rpcs.to_gdal()
+
             for key, val in rpcs.items():
                 key = key.upper().encode('utf-8')
                 val = str(val).encode('utf-8')
-                papszMD = CSLSetNameValue(
-                    papszMD, <const char *>key, <const char *>val)
+                papszMD = CSLSetNameValue(papszMD, <const char *>key, <const char *>val)
+
             exc_wrap_int(GDALSetMetadata(hds, papszMD, "RPC"))
             imgProjOptions = CSLSetNameValue(imgProjOptions, "SRC_METHOD", "RPC")
+            bUseApproxTransformer = False
 
         hTransformArg = exc_wrap_pointer(
             GDALCreateGenImgProjTransformer2(hds, NULL, imgProjOptions)
         )
+
+        pfnTransformer = GDALGenImgProjTransform
+        log.debug("Created exact transformer")
+
         exc_wrap_int(
             GDALSuggestedWarpOutput2(
-                hds, GDALGenImgProjTransform, hTransformArg,
-                geotransform, &npixels, &nlines, extent, 0))
-
-        log.debug("Created transformer and warp output.")
+                hds,
+                pfnTransformer,
+                hTransformArg,
+                geotransform,
+                &npixels,
+                &nlines,
+                extent,
+                0
+            )
+        )
 
     except CPLE_NotSupportedError as err:
         raise CRSError(err.errmsg)
 
-    except CPLE_AppDefinedError as err:
-        if "Reprojection failed" in str(err):
-            # This "exception" should be treated as a debug msg, not error
-            # "Reprojection failed, err = -14, further errors will be
-            # suppressed on the transform object."
-            log.info("Encountered points outside of valid dst crs region")
-            pass
-        else:
-            raise err
     finally:
-        if wkt != NULL:
-            CPLFree(wkt)
         if hTransformArg != NULL:
             GDALDestroyGenImgProjTransformer(hTransformArg)
         if hds != NULL:
@@ -703,12 +712,11 @@ def _calculate_default_transform(src_crs, dst_crs, width, height,
         if papszMD != NULL:
             CSLDestroy(papszMD)
 
-    # Convert those modified arguments to Python values.
     dst_affine = Affine.from_gdal(*[geotransform[i] for i in range(6)])
     dst_width = npixels
     dst_height = nlines
 
-    return dst_affine, dst_width, dst_height
+    return (dst_affine, dst_width, dst_height)
 
 
 DEFAULT_NODATA_FLAG = object()
@@ -722,28 +730,60 @@ cdef GDALDatasetH auto_create_warped_vrt(
     double dfMaxError,
     const GDALWarpOptions *psOptions,
     const char **transformer_options,
-) nogil:
+) except NULL:
+    """Makes a best-fit WarpedVRT around a dataset.
+
+    Returns
+    -------
+    GDALDatasetH
+        Owned by the caller.
+
+    """
+    cdef GDALDatasetH hds_warped = NULL
 
     IF (CTE_GDAL_MAJOR_VERSION, CTE_GDAL_MINOR_VERSION) >= (3, 2):
-        return GDALAutoCreateWarpedVRTEx(
-            hSrcDS,
-            pszSrcWKT,
-            pszDstWKT,
-            eResampleAlg,
-            dfMaxError,
-            psOptions,
-            transformer_options,
-        )
+        try:
+            # This function may put errors on GDAL's error stack while
+            # still returning 0 (no error). Thus we always check and
+            # clear the stack and ignore the error if the function
+            # succeeds.
+            with nogil:
+                hds_warped = GDALAutoCreateWarpedVRTEx(
+                    hSrcDS,
+                    pszSrcWKT,
+                    pszDstWKT,
+                    eResampleAlg,
+                    dfMaxError,
+                    psOptions,
+                    transformer_options,
+                )
+            _ = exc_wrap(1)
 
+        except CPLE_AppDefinedError as err:
+            if hds_warped != NULL:
+                log.info("Ignoring error: err=%r", err)
+            else:
+                raise err
     ELSE:
-        return GDALAutoCreateWarpedVRT(
-            hSrcDS,
-            pszSrcWKT,
-            pszDstWKT,
-            eResampleAlg,
-            dfMaxError,
-            psOptions,
-        )
+        try:
+            with nogil:
+                hds_warped = GDALAutoCreateWarpedVRT(
+                    hSrcDS,
+                    pszSrcWKT,
+                    pszDstWKT,
+                    eResampleAlg,
+                    dfMaxError,
+                    psOptions,
+                )
+            _ = exc_wrap(1)
+
+        except CPLE_AppDefinedError as err:
+            if hds_warped != NULL:
+                log.info("Ignoring error: err=%r", err)
+            else:
+                raise err
+
+    return hds_warped
 
 
 cdef class WarpedVRTReaderBase(DatasetReaderBase):
@@ -842,10 +882,6 @@ cdef class WarpedVRTReaderBase(DatasetReaderBase):
         self._gcps = None
         self._read = False
 
-        if add_alpha and gdal_version().startswith('1'):
-            warnings.warn("Alpha addition not supported by GDAL 1.x")
-            add_alpha = False
-
         # kwargs become warp options.
         self.src_dataset = src_dataset
         self.src_crs = src_dataset.crs if src_crs is None else CRS.from_user_input(src_crs)
@@ -900,23 +936,13 @@ cdef class WarpedVRTReaderBase(DatasetReaderBase):
         self.dst_crs = CRS.from_user_input(crs) if crs is not None else self.src_crs
 
         # Convert CRSes to C WKT strings.
-        try:
-            if not self.src_crs:
-                src_crs_wkt = NULL
-            else:
-                osr = _osr_from_crs(self.src_crs)
-                OSRExportToWkt(osr, &src_crs_wkt)
-        finally:
-            if osr != NULL:
-                OSRRelease(osr)
-            osr = NULL
+        if self.src_crs is not None:
+            src_crs_wkt_b = self.src_crs.to_wkt().encode("utf-8")
+            src_crs_wkt = src_crs_wkt_b
 
         if self.dst_crs is not None:
-            try:
-                osr = _osr_from_crs(self.dst_crs)
-                OSRExportToWkt(osr, &dst_crs_wkt)
-            finally:
-                _safe_osr_release(osr)
+            dst_crs_wkt_b = self.dst_crs.to_wkt().encode("utf-8")
+            dst_crs_wkt = dst_crs_wkt_b
 
         log.debug("Exported CRS to WKT.")
 
@@ -955,10 +981,11 @@ cdef class WarpedVRTReaderBase(DatasetReaderBase):
         if src_alpha:
             src_alpha_band = src_alpha
 
+        gdal_dtype = dtypes._get_gdal_dtype(self.working_dtype)
         psWOptions = create_warp_options(
             <GDALResampleAlg>c_resampling, self.src_nodata,
             self.dst_nodata, src_dataset.count, dst_alpha,
-            src_alpha_band, warp_mem_limit, <GDALDataType>dtypes.dtype_rev[self.working_dtype],
+            src_alpha_band, warp_mem_limit, <GDALDataType>gdal_dtype,
             <const char **>c_warp_extras)
 
         if psWOptions == NULL:
@@ -982,8 +1009,7 @@ cdef class WarpedVRTReaderBase(DatasetReaderBase):
 
         # Case 4
         if not self.dst_transform and (not self.dst_width or not self.dst_height):
-
-            with nogil:
+            try:
                 hds_warped = auto_create_warped_vrt(
                     hds,
                     src_crs_wkt,
@@ -993,9 +1019,12 @@ cdef class WarpedVRTReaderBase(DatasetReaderBase):
                     psWOptions,
                     <const char **>c_warp_extras,
                 )
+            finally:
+                CSLDestroy(c_warp_extras)
+                if psWOptions != NULL:
+                    GDALDestroyWarpOptions(psWOptions)
 
         else:
-
             # Case 1
             if self.dst_transform and self.dst_width and self.dst_height:
                 pass
@@ -1009,8 +1038,12 @@ cdef class WarpedVRTReaderBase(DatasetReaderBase):
                 and not self.src_gcps
                 and not self.src_dataset.rpcs
             ):
-
-                self.dst_transform = Affine.scale(self.src_dataset.width / self.dst_width, self.src_dataset.height / self.dst_height) * self.src_transform
+                # Note: scaling on the right hand side of multiplication
+                # preserves the origin of the geotransform matrix.
+                self.dst_transform = self.src_transform * Affine.scale(
+                    self.src_dataset.width / self.dst_width,
+                    self.src_dataset.height / self.dst_height
+                )
 
             # Case 3
             elif (
@@ -1019,7 +1052,6 @@ cdef class WarpedVRTReaderBase(DatasetReaderBase):
                 and self.dst_height
                 and not self.dst_transform
             ):
-
                 left, bottom, right, top = self.src_dataset.bounds
                 self.dst_transform, width, height = _calculate_default_transform(
                     self.src_crs,
@@ -1034,13 +1066,20 @@ cdef class WarpedVRTReaderBase(DatasetReaderBase):
                     rpcs=self.src_dataset.rpcs,
                     **self.warp_extras,
                 )
-                self.dst_transform = Affine.scale(width / self.dst_width, height / self.dst_height ) * self.dst_transform
+                self.dst_transform = self.dst_transform * Affine.scale(
+                    width / self.dst_width, height / self.dst_height
+                )
 
-            # If we get here it's because the tests above are buggy. We raise a Python exception to indicate that.
+            # If we get here it's because the tests above are buggy.
+            # We raise a Python exception to indicate that.
             else:
-                raise RuntimeError(
-                    "Parameterization error: src_crs={!r}, dst_crs={!r}, dst_width={!r}, dst_height={!r}, dst_transform={!r}".format(self.src_crs, self.dst_crs, self.dst_width, self.dst_height, self.dst_transform))
+                CSLDestroy(c_warp_extras)
+                if psWOptions != NULL:
+                    GDALDestroyWarpOptions(psWOptions)
+                raise RuntimeError("Parameterization error")
 
+            # Continue with finishing cases 1-3, which have been
+            # generalized.
             t = self.src_transform.to_gdal()
             for i in range(6):
                 src_gt[i] = t[i]
@@ -1065,19 +1104,16 @@ cdef class WarpedVRTReaderBase(DatasetReaderBase):
                     psWOptions.pfnTransformer = GDALApproxTransform
                     GDALApproxTransformerOwnsSubtransformer(hTransformArg, 1)
 
-            except Exception:
-                CPLFree(dst_crs_wkt)
-                CPLFree(src_crs_wkt)
+                psWOptions.pTransformerArg = hTransformArg
+
+                with nogil:
+                    hds_warped = GDALCreateWarpedVRT(hds, c_width, c_height, dst_gt, psWOptions)
+                    GDALSetProjection(hds_warped, dst_crs_wkt)
+
+            finally:
                 CSLDestroy(c_warp_extras)
                 if psWOptions != NULL:
                     GDALDestroyWarpOptions(psWOptions)
-
-            else:
-                psWOptions.pTransformerArg = hTransformArg
-
-            with nogil:
-                hds_warped = GDALCreateWarpedVRT(hds, c_width, c_height, dst_gt, psWOptions)
-                GDALSetProjection(hds_warped, dst_crs_wkt)
 
         # End of the 4 cases.
 
@@ -1086,13 +1122,6 @@ cdef class WarpedVRTReaderBase(DatasetReaderBase):
 
         except CPLE_OpenFailedError as err:
             raise RasterioIOError(err.errmsg)
-
-        finally:
-            CPLFree(dst_crs_wkt)
-            CPLFree(src_crs_wkt)
-            CSLDestroy(c_warp_extras)
-            if psWOptions != NULL:
-                GDALDestroyWarpOptions(psWOptions)
 
         if self.dst_nodata is None:
             for i in self.indexes:
@@ -1106,12 +1135,13 @@ cdef class WarpedVRTReaderBase(DatasetReaderBase):
             GDALSetRasterColorInterpretation(self.band(dst_alpha), <GDALColorInterp>6)
 
         self._set_attrs_from_dataset_handle()
-
-        # This attribute will be used by read().
         self._nodatavals = [self.dst_nodata for i in self.indexes]
 
         if dst_alpha and len(self._nodatavals) == 3:
             self._nodatavals[dst_alpha - 1] = None
+
+        self._env = ExitStack()
+        self._closed = False
 
     @property
     def crs(self):
@@ -1130,7 +1160,7 @@ cdef class WarpedVRTReaderBase(DatasetReaderBase):
             If `indexes` is a list, the result is a 3D array, but is
             a 2D array if it is a band index number.
 
-        out : numpy ndarray, optional
+        out : numpy.ndarray, optional
             As with Numpy ufuncs, this is an optional reference to an
             output array into which data will be placed. If the height
             and width of `out` differ from that of the specified
@@ -1144,7 +1174,7 @@ cdef class WarpedVRTReaderBase(DatasetReaderBase):
 
             This parameter cannot be combined with `out_shape`.
 
-        out_dtype : str or numpy dtype
+        out_dtype : str or numpy.dtype
             The desired output data type. For example: 'uint8' or
             rasterio.uint16.
 
@@ -1184,7 +1214,7 @@ cdef class WarpedVRTReaderBase(DatasetReaderBase):
 
         Returns
         -------
-        Numpy ndarray or a view on a Numpy ndarray
+        numpy.ndarray or a view on a numpy.ndarray
 
         Note: as with Numpy ufuncs, an object is returned even if you
         use the optional `out` argument and the return value shall be
@@ -1396,80 +1426,102 @@ cdef double antimeridian_max(data):
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def _transform_bounds(
-    src_crs,
-    dst_crs,
+    CRS src_crs,
+    CRS dst_crs,
     double left,
     double bottom,
     double right,
     double top,
     int densify_pts,
 ):
-    src_crs = CRS.from_user_input(src_crs)
-    dst_crs = CRS.from_user_input(dst_crs)
+    IF (CTE_GDAL_MAJOR_VERSION, CTE_GDAL_MINOR_VERSION) >= (3, 4):
+        cdef double out_left = np.inf
+        cdef double out_bottom = np.inf
+        cdef double out_right = np.inf
+        cdef double out_top = np.inf
+        cdef OGRCoordinateTransformationH transform = NULL
+        transform = OCTNewCoordinateTransformation(src_crs._osr, dst_crs._osr)
+        transform = exc_wrap_pointer(transform)
 
-    if src_crs == dst_crs:
-        return (left, bottom, right, top)
+        # OCTTransformBounds() returns TRUE/FALSE contrary to most GDAL API functions
+        cdef int status = 0
 
-    if densify_pts < 0:
-        raise ValueError("densify_pts must be positive")
+        try:
+            status = OCTTransformBounds(
+                transform,
+                left, bottom, right, top,
+                &out_left, &out_bottom, &out_right, &out_top,
+                densify_pts
+            )
+            exc_wrap_int(status == 0)
+        finally:
+            OCTDestroyCoordinateTransformation(transform)
+        return out_left, out_bottom, out_right, out_top
 
-    cdef bint degree_output = dst_crs.is_geographic
-    cdef bint degree_input = src_crs.is_geographic
+    ELSE:
+        if src_crs == dst_crs:
+            return (left, bottom, right, top)
 
-    if degree_output and densify_pts < 2:
-        raise ValueError("densify_pts must be 2+ for degree output")
+        if densify_pts < 0:
+            raise ValueError("densify_pts must be positive")
 
-    cdef int side_pts = densify_pts + 1  # add one because we are densifying
-    cdef int boundary_len = side_pts * 4
-    x_boundary_array = np.empty(boundary_len, dtype=np.float64)
-    y_boundary_array = np.empty(boundary_len, dtype=np.float64)
-    cdef double delta_x = 0
-    cdef double delta_y = 0
-    cdef int iii = 0
+        cdef bint degree_output = dst_crs.is_geographic
+        cdef bint degree_input = src_crs.is_geographic
 
-    if degree_input and right < left:
-        # handle antimeridian
-        delta_x = (right - left + 360.0) / side_pts
-    else:
-        delta_x = (right - left) / side_pts
-    if degree_input and top < bottom:
-        # handle antimeridian
-        # depending on the axis order, longitude has the potential
-        # to be on the y axis. It shouldn't reach here if it is latitude.
-        delta_y = (top - bottom + 360.0) / side_pts
-    else:
-        delta_y = (top - bottom) / side_pts
+        if degree_output and densify_pts < 2:
+            raise ValueError("densify_pts must be 2+ for degree output")
 
-    # build densified bounding box
-    # Note: must be a linear ring for antimeridian logic
-    for iii in range(side_pts):
-        # left boundary
-        y_boundary_array[iii] = top - iii * delta_y
-        x_boundary_array[iii] = left
-        # bottom boundary
-        y_boundary_array[iii + side_pts] = bottom
-        x_boundary_array[iii + side_pts] = left + iii * delta_x
-        # right boundary
-        y_boundary_array[iii + side_pts * 2] = bottom + iii * delta_y
-        x_boundary_array[iii + side_pts * 2] = right
-        # top boundary
-        y_boundary_array[iii + side_pts * 3] = top
-        x_boundary_array[iii + side_pts * 3] = right - iii * delta_x
+        cdef int side_pts = densify_pts + 1  # add one because we are densifying
+        cdef int boundary_len = side_pts * 4
+        x_boundary_array = np.empty(boundary_len, dtype=np.float64)
+        y_boundary_array = np.empty(boundary_len, dtype=np.float64)
+        cdef double delta_x = 0
+        cdef double delta_y = 0
+        cdef int iii = 0
 
-    x_boundary_array, y_boundary_array = _transform(
-        src_crs, dst_crs, x_boundary_array, y_boundary_array, None,
-    )
+        if degree_input and right < left:
+            # handle antimeridian
+            delta_x = (right - left + 360.0) / side_pts
+        else:
+            delta_x = (right - left) / side_pts
+        if degree_input and top < bottom:
+            # handle antimeridian
+            # depending on the axis order, longitude has the potential
+            # to be on the y axis. It shouldn't reach here if it is latitude.
+            delta_y = (top - bottom + 360.0) / side_pts
+        else:
+            delta_y = (top - bottom) / side_pts
 
-    if degree_output:
-        left = antimeridian_min(x_boundary_array)
-        right = antimeridian_max(x_boundary_array)
-    else:
-        x_boundary_array = np.ma.masked_invalid(x_boundary_array, copy=False)
-        left = x_boundary_array.min()
-        right = x_boundary_array.max()
+        # build densified bounding box
+        # Note: must be a linear ring for antimeridian logic
+        for iii in range(side_pts):
+            # left boundary
+            y_boundary_array[iii] = top - iii * delta_y
+            x_boundary_array[iii] = left
+            # bottom boundary
+            y_boundary_array[iii + side_pts] = bottom
+            x_boundary_array[iii + side_pts] = left + iii * delta_x
+            # right boundary
+            y_boundary_array[iii + side_pts * 2] = bottom + iii * delta_y
+            x_boundary_array[iii + side_pts * 2] = right
+            # top boundary
+            y_boundary_array[iii + side_pts * 3] = top
+            x_boundary_array[iii + side_pts * 3] = right - iii * delta_x
 
-    y_boundary_array = np.ma.masked_invalid(y_boundary_array, copy=False)
-    bottom = y_boundary_array.min()
-    top = y_boundary_array.max()
+        x_boundary_array, y_boundary_array = _transform(
+            src_crs, dst_crs, x_boundary_array, y_boundary_array, None,
+        )
 
-    return left, bottom, right, top
+        if degree_output:
+            left = antimeridian_min(x_boundary_array)
+            right = antimeridian_max(x_boundary_array)
+        else:
+            x_boundary_array = np.ma.masked_invalid(x_boundary_array, copy=False)
+            left = x_boundary_array.min()
+            right = x_boundary_array.max()
+
+        y_boundary_array = np.ma.masked_invalid(y_boundary_array, copy=False)
+        bottom = y_boundary_array.min()
+        top = y_boundary_array.max()
+
+        return left, bottom, right, top

@@ -4,20 +4,23 @@ Rasterio
 
 Rasterio reads and writes geospatial raster data.
 
-.. image:: https://travis-ci.com/mapbox/rasterio.png?branch=master
-   :target: https://travis-ci.com/mapbox/rasterio
+.. image:: https://app.travis-ci.com/rasterio/rasterio.svg?branch=master
+   :target: https://app.travis-ci.com/rasterio/rasterio
 
 .. image:: https://coveralls.io/repos/github/mapbox/rasterio/badge.svg?branch=master
    :target: https://coveralls.io/github/mapbox/rasterio?branch=master
+
+.. image:: https://img.shields.io/pypi/v/rasterio
+   :target: https://pypi.org/project/rasterio/
 
 Geographic information systems use GeoTIFF and other formats to organize and
 store gridded, or raster, datasets. Rasterio reads and writes these formats and
 provides a Python API based on N-D arrays.
 
-Rasterio 1.2 works with Python versions 3.6 through 3.9, Numpy versions 1.15
-and newer, and GDAL versions 2.3 through 3.2. Official binary packages for
-Linux and Mac OS X are available on PyPI. Unofficial binary packages for
-Windows are available through other channels.
+Rasterio 1.3 works with Python 3.8+, Numpy 1.18+, and GDAL 3.1+. Official
+binary packages for Linux, macOS, and Windows with most built-in format
+drivers plus HDF5, netCDF, and OpenJPEG2000 are available on PyPI. Unofficial
+binary packages for Windows are available through other channels.
 
 Read the documentation for more details: https://rasterio.readthedocs.io/.
 
@@ -44,8 +47,10 @@ band.  This new band is then written to a new single band TIFF.
     # arrays to it in-place converts those arrays "up" and
     # preserves the type of the total array.
     total = np.zeros(r.shape)
+
     for band in r, g, b:
         total += band
+
     total /= 3
 
     # Write the product as a raster band to a new 8-bit file. For
@@ -86,23 +91,25 @@ Rasterio gives access to properties of a geospatial raster file.
     # 3
     # [1, 2, 3]
 
-A rasterio dataset also provides methods for getting extended array slices given
-georeferenced coordinates.
-
+A rasterio dataset also provides methods for getting read/write windows (like
+extended array slices) given georeferenced coordinates.
 
 .. code-block:: python
 
     with rasterio.open('tests/data/RGB.byte.tif') as src:
-        print src.window(**src.window_bounds(((100, 200), (100, 200))))
+        window = src.window(*src.bounds)
+        print(window)
+        print(src.read(window=window).shape)
 
     # Printed:
-    # ((100, 200), (100, 200))
+    # Window(col_off=0.0, row_off=0.0, width=791.0000000000002, height=718.0)
+    # (3, 718, 791)
 
 Rasterio CLI
 ============
 
 Rasterio's command line interface, named "rio", is documented at `cli.rst
-<https://github.com/mapbox/rasterio/blob/master/docs/cli.rst>`__. Its ``rio
+<https://github.com/rasterio/rasterio/blob/master/docs/cli.rst>`__. Its ``rio
 insp`` command opens the hood of any raster dataset so you can poke around
 using Python.
 
@@ -146,11 +153,11 @@ Rio Plugins
 -----------
 
 Rio provides the ability to create subcommands using plugins.  See
-`cli.rst <https://github.com/mapbox/rasterio/blob/master/docs/cli.rst#rio-plugins>`__
+`cli.rst <https://github.com/rasterio/rasterio/blob/master/docs/cli.rst#rio-plugins>`__
 for more information on building plugins.
 
 See the
-`plugin registry <https://github.com/mapbox/rasterio/wiki/Rio-plugin-registry>`__
+`plugin registry <https://github.com/rasterio/rasterio/wiki/Rio-plugin-registry>`__
 for a list of available plugins.
 
 
@@ -178,69 +185,80 @@ system set the variable as shown below.
 Dependencies
 ------------
 
-Rasterio has a C library dependency: GDAL >= 2.3. GDAL itself depends on some
+Rasterio has a C library dependency: GDAL >= 3.1. GDAL itself depends on some
 other libraries provided by most major operating systems and also depends on
-the non standard GEOS and PROJ4 libraries. How to meet these requirement will
+the non standard GEOS and PROJ libraries. How to meet these requirement will
 be explained below.
 
 Rasterio's Python dependencies are (see the package metadata file):
 
-```
-affine
-attrs
-certifi
-click>=4.0
-cligj>=0.5
-numpy
-snuggs>=1.4.1
-click-plugins
-setuptools
+.. code-block:: none
 
-[all]
-hypothesis
-pytest-cov>=2.2.0
-matplotlib
-boto3>=1.2.4
-numpydoc
-pytest>=2.8.2
-shapely
-ipython>=2.0
-sphinx
-packaging
-ghp-import
-sphinx-rtd-theme
+    affine
+    attrs
+    certifi
+    click>=4.0
+    cligj>=0.5
+    numpy>=1.18
+    snuggs>=1.4.1
+    click-plugins
+    setuptools
 
-[docs]
-ghp-import
-numpydoc
-sphinx
-sphinx-rtd-theme
+    [all]
+    hypothesis
+    pytest-cov>=2.2.0
+    matplotlib
+    boto3>=1.2.4
+    numpydoc
+    pytest>=2.8.2
+    shapely
+    ipython>=2.0
+    sphinx
+    sphinx-click
+    packaging
+    ghp-import
+    sphinx-rtd-theme
 
-[ipython]
-ipython>=2.0
+    [docs]
+    ghp-import
+    numpydoc
+    sphinx
+    sphinx-click
+    sphinx-rtd-theme
 
-[plot]
-matplotlib
+    [ipython]
+    ipython>=2.0
 
-[s3]
-boto3>=1.2.4
+    [plot]
+    matplotlib
 
-[test]
-boto3>=1.2.4
-hypothesis
-packaging
-pytest-cov>=2.2.0
-pytest>=2.8.2
-shapely
-```
+    [s3]
+    boto3>=1.2.4
 
-Development requires (see requirements-dev.txt) Cython and other packages.
+    [test]
+    boto3>=1.2.4
+    hypothesis
+    packaging
+    pytest-cov>=2.2.0
+    pytest>=2.8.2
+    shapely
+
+Development requires Cython and other packages.
 
 Binary Distributions
 --------------------
 
 Use a binary distribution that directly or indirectly provides GDAL if
 possible.
+
+The rasterio wheels on PyPI include GDAL and its own dependencies.
+
+========  ====
+Rasterio  GDAL
+========  ====
+1.2.3     3.2.2
+1.2.4+    3.3.0
+========  ====
 
 Linux
 +++++
@@ -296,7 +314,7 @@ Rasterio is a Python C extension and to build you'll need a working compiler
 required to run the rasterio setup script. Numpy has to be installed (via the
 indicated requirements file) before rasterio can be installed. See rasterio's
 Travis `configuration
-<https://github.com/mapbox/rasterio/blob/master/.travis.yml>`__ for more
+<https://github.com/rasterio/rasterio/blob/master/.travis.yml>`__ for more
 guidance.
 
 Linux
@@ -378,12 +396,6 @@ the time to craft a clear question and be patient about responses.
 Please do not bring these questions to Rasterio's issue tracker, which we want
 to reserve for bug reports and other actionable issues.
 
-While Rasterio's repo is in the Mapbox GitHub organization, Mapbox's Support
-team is focused on customer support for its commercial platform and Rasterio
-support requests may be perfunctorily closed with or without a link to
-https://rasterio.groups.io/g/main. It's better to bring questions directly to
-the main Rasterio group at groups.io.
-
 Development and Testing
 =======================
 
@@ -401,6 +413,8 @@ See `LICENSE.txt <LICENSE.txt>`__.
 
 Authors
 =======
+
+The `rasterio` project was begun at Mapbox and was transferred to the `rasterio` Github organization in October 2021.
 
 See `AUTHORS.txt <AUTHORS.txt>`__.
 

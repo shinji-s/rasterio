@@ -3,7 +3,7 @@
 from __future__ import division
 
 from collections import OrderedDict
-from distutils.version import LooseVersion
+from contextlib import ExitStack
 import math
 
 import click
@@ -106,6 +106,9 @@ def calc(ctx, command, files, output, driver, name, dtype, masked, overwrite, me
         * (read i) evaluates to the i-th input dataset (a 3-D array).
         * (read i j) evaluates to the j-th band of the i-th dataset (a
           2-D array).
+        * (read i j 'float64') casts the array to, e.g. float64. This
+          is critical if calculations will produces values that exceed
+          the limits of the dataset's natural data type.
         * (take foo j) evaluates to the j-th band of a dataset named foo
           (see help on the --name option above).
         * Standard numpy array operators (+, -, *, /) are available.
@@ -140,12 +143,14 @@ def calc(ctx, command, files, output, driver, name, dtype, masked, overwrite, me
     sources = []
 
     try:
-        with ctx.obj['env']:
-            output, files = resolve_inout(files=files, output=output,
-                                          overwrite=overwrite)
-            inputs = ([tuple(n.split('=')) for n in name] +
-                      [(None, n) for n in files])
-            sources = [rasterio.open(path) for name, path in inputs]
+        with ctx.obj["env"], ExitStack() as stack:
+            output, files = resolve_inout(
+                files=files, output=output, overwrite=overwrite
+            )
+            inputs = [tuple(n.split("=")) for n in name] + [(None, n) for n in files]
+            sources = [
+                stack.enter_context(rasterio.open(path)) for name, path in inputs
+            ]
 
             first = sources[0]
             kwargs = first.profile
@@ -156,7 +161,6 @@ def calc(ctx, command, files, output, driver, name, dtype, masked, overwrite, me
             if driver:
                 kwargs['driver'] = driver
 
-            # Extend snuggs.
             snuggs.func_map['read'] = _read_array
             snuggs.func_map['band'] = lambda d, i: _get_bands(inputs, sources, d, i)
             snuggs.func_map['bands'] = lambda d: _get_bands(inputs, sources, d)
@@ -169,23 +173,13 @@ def calc(ctx, command, files, output, driver, name, dtype, masked, overwrite, me
             work_windows = [(None, Window(0, 0, 16, 16))]
 
             for ij, window in work_windows:
-
                 ctxkwds = OrderedDict()
 
                 for i, ((name, path), src) in enumerate(zip(inputs, sources)):
-
-                    # Using the class method instead of instance
-                    # method. Latter raises
-                    #
-                    # TypeError: astype() got an unexpected keyword
-                    # argument 'copy'
-                    #
-                    # possibly something to do with the instance being
-                    # a masked array.
                     ctxkwds[name or '_i%d' % (i + 1)] = src.read(masked=masked, window=window)
 
                 res = snuggs.eval(command, **ctxkwds)
-                results = res.astype(dtype, copy=False)
+                results = res.astype(dtype)
 
                 if isinstance(results, np.ma.core.MaskedArray):
                     results = results.filled(float(kwargs['nodata']))
@@ -199,7 +193,15 @@ def calc(ctx, command, files, output, driver, name, dtype, masked, overwrite, me
                 if dst is None:
                     kwargs['count'] = results.shape[0]
                     dst = rasterio.open(output, 'w', **kwargs)
-                    work_windows.extend(_chunk_output(dst.width, dst.height, dst.count, np.dtype(dst.dtypes[0]).itemsize, mem_limit=mem_limit))
+                    work_windows.extend(
+                        _chunk_output(
+                            dst.width,
+                            dst.height,
+                            dst.count,
+                            np.dtype(dst.dtypes[0]).itemsize,
+                            mem_limit=mem_limit,
+                        )
+                    )
 
                 # In subsequent iterations we write results.
                 else:

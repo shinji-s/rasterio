@@ -5,7 +5,12 @@ Happily strings can be used throughout Numpy and so existing code will
 not break.
 
 """
-import numpy
+import numpy as np
+
+from rasterio.env import GDALVersion
+
+_GDAL_AT_LEAST_35 = GDALVersion.runtime().at_least("3.5")
+_GDAL_AT_LEAST_37 = GDALVersion.runtime().at_least("3.7")
 
 bool_ = 'bool'
 ubyte = uint8 = 'uint8'
@@ -14,6 +19,8 @@ uint16 = 'uint16'
 int16 = 'int16'
 uint32 = 'uint32'
 int32 = 'int32'
+uint64 = 'uint64'
+int64 = 'int64'
 float32 = 'float32'
 float64 = 'float64'
 complex_ = 'complex'
@@ -37,12 +44,31 @@ dtype_fwd = {
     11: complex128,  # GDT_CFloat64
 }
 
+if _GDAL_AT_LEAST_35:
+    dtype_fwd[12] = int64 # GDT_Int64
+    dtype_fwd[13] = uint64 # GDT_UInt64
+
+if _GDAL_AT_LEAST_37:
+    dtype_fwd[14] = sbyte # GDT_Int8
+
 dtype_rev = dict((v, k) for k, v in dtype_fwd.items())
 
 dtype_rev["uint8"] = 1
-dtype_rev["int8"] = 1
+if not _GDAL_AT_LEAST_37:
+    dtype_rev["int8"] = 1
+
 dtype_rev["complex"] = 11
 dtype_rev["complex_int16"] = 8
+
+
+def _get_gdal_dtype(type_name):
+    try:
+        return dtype_rev[type_name]
+    except KeyError:
+        raise TypeError(
+            f"Unsupported data type {type_name}. "
+            f"Allowed data types: {list(dtype_rev)}."
+        )
 
 typename_fwd = {
     0: 'Unknown',
@@ -58,6 +84,13 @@ typename_fwd = {
     10: 'CFloat32',
     11: 'CFloat64'}
 
+if _GDAL_AT_LEAST_35:
+    typename_fwd[12] = 'Int64'
+    typename_fwd[13] = 'UInt64'
+
+if _GDAL_AT_LEAST_37:
+    typename_fwd[14] = 'Int8'
+
 typename_rev = dict((v, k) for k, v in typename_fwd.items())
 
 dtype_ranges = {
@@ -70,12 +103,16 @@ dtype_ranges = {
     'float32': (-3.4028235e+38, 3.4028235e+38),
     'float64': (-1.7976931348623157e+308, 1.7976931348623157e+308)}
 
+if _GDAL_AT_LEAST_35:
+    dtype_ranges['int64'] = (-9223372036854775808, 9223372036854775807)
+    dtype_ranges['uint64'] = (0, 18446744073709551615)
+
 
 def in_dtype_range(value, dtype):
     """
     Check if the value is within the dtype range
     """
-    if numpy.dtype(dtype).kind == "f" and (numpy.isinf(value) or numpy.isnan(value)):
+    if np.dtype(dtype).kind == "f" and (np.math.isinf(value) or np.math.isnan(value)):
         return True
     range_min, range_max = dtype_ranges[dtype]
     return range_min <= value <= range_max
@@ -112,15 +149,11 @@ def get_minimum_dtype(values):
     -------
     rasterio dtype string
     """
-    import numpy as np
-
-    if not is_ndarray(values):
-        values = np.array(values)
-
+    values = np.asanyarray(values)
     min_value = values.min()
     max_value = values.max()
 
-    if values.dtype.kind in ('i', 'u'):
+    if values.dtype.kind in {'i', 'u'}:
         if min_value >= 0:
             if max_value <= 255:
                 return uint8
@@ -128,11 +161,18 @@ def get_minimum_dtype(values):
                 return uint16
             elif max_value <= 4294967295:
                 return uint32
+            if not _GDAL_AT_LEAST_35:
+                raise ValueError("Values out of range for supported dtypes")
+            return uint64
+        elif min_value >= -128 and max_value <= 127:
+            return int8
         elif min_value >= -32768 and max_value <= 32767:
             return int16
         elif min_value >= -2147483648 and max_value <= 2147483647:
             return int32
-
+        if not _GDAL_AT_LEAST_35:
+            raise ValueError("Values out of range for supported dtypes")
+        return int64
     else:
         if min_value >= -3.4028235e+38 and max_value <= 3.4028235e+38:
             return float32
@@ -141,7 +181,6 @@ def get_minimum_dtype(values):
 
 def is_ndarray(array):
     """Check if array is a ndarray."""
-    import numpy as np
 
     return isinstance(array, np.ndarray) or hasattr(array, '__array__')
 
@@ -152,17 +191,14 @@ def can_cast_dtype(values, dtype):
     Parameters
     ----------
     values: list-like
-    dtype: numpy dtype or string
+    dtype: numpy.dtype or string
 
     Returns
     -------
     boolean
         True if values can be cast to data type.
     """
-    import numpy as np
-
-    if not is_ndarray(values):
-        values = np.array(values)
+    values = np.asanyarray(values)
 
     if values.dtype.name == _getnpdtype(dtype).name:
         return True
@@ -188,10 +224,7 @@ def validate_dtype(values, valid_dtypes):
     boolean:
         True if dtype of values is one of valid_dtypes
     """
-    import numpy as np
-
-    if not is_ndarray(values):
-        values = np.array(values)
+    values = np.asanyarray(values)
 
     return (values.dtype.name in valid_dtypes or
             get_minimum_dtype(values) in valid_dtypes)
@@ -202,7 +235,6 @@ def _is_complex_int(dtype):
 
 
 def _getnpdtype(dtype):
-    import numpy as np
     if _is_complex_int(dtype):
         return np.dtype("complex64")
     else:

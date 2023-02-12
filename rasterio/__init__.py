@@ -1,50 +1,89 @@
 """Rasterio"""
 
 from collections import namedtuple
-from contextlib import contextmanager
+import glob
 import logging
 from logging import NullHandler
 import os
+import platform
+import warnings
 
-import rasterio._loading
-with rasterio._loading.add_gdal_dll_directories():
-    from rasterio._base import gdal_version
-    from rasterio.drivers import driver_from_extension, is_blacklisted
-    from rasterio.dtypes import (
-        bool_,
-        ubyte,
-        sbyte,
-        uint8,
-        int8,
-        uint16,
-        int16,
-        uint32,
-        int32,
-        float32,
-        float64,
-        complex_,
-        check_dtype,
-        complex_int16,
-    )
-    from rasterio.env import ensure_env_with_credentials, Env
-    from rasterio.errors import RasterioIOError, DriverCapabilityError
-    from rasterio.io import (
-        DatasetReader, get_writer_for_path, get_writer_for_driver, MemoryFile)
-    from rasterio.profiles import default_gtiff_profile
-    from rasterio.transform import Affine, guard_transform
-    from rasterio.path import parse_path
+# On Windows we must explicitly register the directories that contain
+# the GDAL and supporting DLLs starting with Python 3.8. Presently, we
+# support the rasterio-wheels location or directories on the system's
+# executable path.
+if platform.system() == "Windows":
+    _whl_dir = os.path.join(os.path.dirname(__file__), ".libs")
+    if os.path.exists(_whl_dir):
+        os.add_dll_directory(_whl_dir)
+    else:
+        if "PATH" in os.environ:
+            for p in os.environ["PATH"].split(os.pathsep):
+                if p and glob.glob(os.path.join(p, "gdal*.dll")):
+                    os.add_dll_directory(os.path.abspath(p))
 
-    # These modules are imported from the Cython extensions, but are also import
-    # here to help tools like cx_Freeze find them automatically
-    import rasterio._err
-    import rasterio.coords
-    import rasterio.enums
-    import rasterio.path
 
-__all__ = ['band', 'open', 'pad', 'Env']
-__version__ = "1.3dev"
-__version__ = "1.2.6"
+from rasterio._show_versions import show_versions
+from rasterio._version import gdal_version, get_geos_version, get_proj_version
+from rasterio.crs import CRS
+from rasterio.drivers import driver_from_extension, is_blacklisted
+from rasterio.dtypes import (
+    bool_,
+    ubyte,
+    sbyte,
+    uint8,
+    int8,
+    uint16,
+    int16,
+    uint32,
+    int32,
+    int64,
+    uint64,
+    float32,
+    float64,
+    complex_,
+    check_dtype,
+    complex_int16,
+)
+from rasterio.env import ensure_env_with_credentials, Env
+from rasterio.errors import (
+    RasterioIOError,
+    DriverCapabilityError,
+    RasterioDeprecationWarning,
+)
+from rasterio.io import (
+    DatasetReader,
+    get_writer_for_path,
+    get_writer_for_driver,
+    MemoryFile,
+)
+from rasterio.profiles import default_gtiff_profile
+from rasterio.transform import Affine, guard_transform
+from rasterio._path import _parse_path
+
+# These modules are imported from the Cython extensions, but are also import
+# here to help tools like cx_Freeze find them automatically
+import rasterio._err
+import rasterio.coords
+import rasterio.enums
+import rasterio._path
+
+try:
+    from rasterio.io import FilePath
+
+    have_vsi_plugin = True
+except ImportError:
+
+    class FilePath:
+        pass
+
+    have_vsi_plugin = False
+
+__all__ = ['band', 'open', 'pad', 'Band', 'Env', 'CRS']
+__version__ = "1.4dev"
 __gdal_version__ = gdal_version()
+__proj_version__ = ".".join([str(version) for version in get_proj_version()])
+__geos_version__ = ".".join([str(version) for version in get_geos_version()])
 
 # Rasterio attaches NullHandler to the 'rasterio' logger and its
 # descendents. See
@@ -53,6 +92,16 @@ __gdal_version__ = gdal_version()
 # See rasterio/rio/main.py for an example.
 log = logging.getLogger(__name__)
 log.addHandler(NullHandler())
+
+
+# Remove this in 1.4.0 (see comment on gh-2423).
+def parse_path(path):
+    warnings.warn(
+        "rasterio.parse_path will be removed in version 1.4.",
+        RasterioDeprecationWarning,
+        stacklevel=2,
+    )
+    return _parse_path(path)
 
 
 @ensure_env_with_credentials
@@ -72,16 +121,18 @@ def open(fp, mode='r', driver=None, width=None, height=None, count=None,
 
     Parameters
     ----------
-    fp : str, file object or PathLike object
-        A filename or URL, a file object opened in binary ('rb') mode,
-        or a Path object.
+    fp : str, file object, PathLike object, FilePath, or MemoryFile
+        A filename or URL, a file object opened in binary ('rb') mode, a
+        Path object, or one of the rasterio classes that provides the
+        dataset-opening interface (has an open method that returns a
+        dataset).
     mode : str, optional
         'r' (read, the default), 'r+' (read/write), 'w' (write), or
         'w+' (write/read).
     driver : str, optional
         A short format driver name (e.g. "GTiff" or "JPEG") or a list of
         such names (see GDAL docs at
-        http://www.gdal.org/formats_list.html). In 'w' or 'w+' modes
+        https://gdal.org/drivers/raster/index.html). In 'w' or 'w+' modes
         a single name is required. In 'r' or 'r+' modes the driver can
         usually be omitted. Registered drivers will be tried
         sequentially until a match is found. When multiple drivers are
@@ -103,9 +154,9 @@ def open(fp, mode='r', driver=None, width=None, height=None, count=None,
         Affine transformation mapping the pixel space to geographic
         space. Required in 'w' or 'w+' modes, it is ignored in 'r' or
         'r+' modes.
-    dtype : str or numpy dtype
+    dtype : str or numpy.dtype
         The data type for bands. For example: 'uint8' or
-        ``rasterio.uint16``. Required in 'w' or 'w+' modes, it is
+        :attr:`rasterio.uint16`. Required in 'w' or 'w+' modes, it is
         ignored in 'r' or 'r+' modes.
     nodata : int, float, or nan; optional
         Defines the pixel value to be interpreted as not valid data.
@@ -156,7 +207,11 @@ def open(fp, mode='r', driver=None, width=None, height=None, count=None,
     """
 
     if not isinstance(fp, str):
-        if not (hasattr(fp, 'read') or hasattr(fp, 'write') or isinstance(fp, os.PathLike)):
+        if not (
+            hasattr(fp, "read")
+            or hasattr(fp, "write")
+            or isinstance(fp, (os.PathLike, MemoryFile, FilePath))
+        ):
             raise TypeError("invalid path or file: {0!r}".format(fp))
     if mode and not isinstance(mode, str):
         raise TypeError("invalid mode: {0!r}".format(mode))
@@ -175,53 +230,79 @@ def open(fp, mode='r', driver=None, width=None, height=None, count=None,
             "Blacklisted: file cannot be opened by "
             "driver '{0}' in '{1}' mode".format(driver, mode))
 
-    # Special case for file object argument.
+    # If the fp argument is a file-like object and can be adapted by
+    # rasterio's FilePath we do so. Otherwise, we use a MemoryFile to
+    # hold fp's contents and store that in an ExitStack attached to the
+    # dataset object that we will return. When a dataset's close method
+    # is called, this ExitStack will be unwound and the MemoryFile's
+    # storage will be cleaned up.
     if mode == 'r' and hasattr(fp, 'read'):
-
-        @contextmanager
-        def fp_reader(fp):
+        if have_vsi_plugin:
+            return FilePath(fp).open(driver=driver, sharing=sharing, **kwargs)
+        else:
             memfile = MemoryFile(fp.read())
-            dataset = memfile.open(driver=driver, sharing=sharing)
-            try:
-                yield dataset
-            finally:
-                dataset.close()
-                memfile.close()
-
-        return fp_reader(fp)
+            dataset = memfile.open(driver=driver, sharing=sharing, **kwargs)
+            dataset._env.enter_context(memfile)
+            return dataset
 
     elif mode in ('w', 'w+') and hasattr(fp, 'write'):
+        memfile = MemoryFile()
+        dataset = memfile.open(
+            driver=driver,
+            width=width,
+            height=height,
+            count=count,
+            crs=crs,
+            transform=transform,
+            dtype=dtype,
+            nodata=nodata,
+            sharing=sharing,
+            **kwargs
+        )
+        dataset._env.enter_context(memfile)
 
-        @contextmanager
-        def fp_writer(fp):
-            memfile = MemoryFile()
-            dataset = memfile.open(driver=driver, width=width, height=height,
-                                   count=count, crs=crs, transform=transform,
-                                   dtype=dtype, nodata=nodata, sharing=sharing, **kwargs)
-            try:
-                yield dataset
-            finally:
-                dataset.close()
-                memfile.seek(0)
-                fp.write(memfile.read())
-                memfile.close()
+        # For the writing case we push an extra callback onto the
+        # ExitStack. It ensures that the MemoryFile's contents are
+        # copied to the open file object.
+        def func(*args, **kwds):
+            memfile.seek(0)
+            fp.write(memfile.read())
 
-        return fp_writer(fp)
+        dataset._env.callback(func)
+        return dataset
 
+    # TODO: test for a shared base class or abstract type.
+    elif isinstance(fp, (FilePath, MemoryFile)):
+        if mode.startswith("r"):
+            dataset = fp.open(driver=driver, sharing=sharing, **kwargs)
+
+        # Note: FilePath does not support writing and an exception will
+        # result from this.
+        elif mode.startswith("w"):
+            dataset = fp.open(
+                driver=driver,
+                width=width,
+                height=height,
+                count=count,
+                crs=crs,
+                transform=transform,
+                dtype=dtype,
+                nodata=nodata,
+                sharing=sharing,
+                **kwargs
+            )
+        return dataset
+
+    # At this point, the fp argument is a string or path-like object
+    # which can be converted to a string.
     else:
-        # If a PathLike instance is given, convert it to a string path.
-        fp = os.fspath(fp)
+        raw_dataset_path = os.fspath(fp)
+        path = _parse_path(raw_dataset_path)
 
-        # The 'normal' filename or URL path.
-        path = parse_path(fp)
-
-        # Create dataset instances and pass the given env, which will
-        # be taken over by the dataset's context manager if it is not
-        # None.
-        if mode == 'r':
-            s = DatasetReader(path, driver=driver, sharing=sharing, **kwargs)
+        if mode == "r":
+            dataset = DatasetReader(path, driver=driver, sharing=sharing, **kwargs)
         elif mode == "r+":
-            s = get_writer_for_path(path, driver=driver)(
+            dataset = get_writer_for_path(path, driver=driver)(
                 path, mode, driver=driver, sharing=sharing, **kwargs
             )
         elif mode.startswith("w"):
@@ -229,13 +310,20 @@ def open(fp, mode='r', driver=None, width=None, height=None, count=None,
                 driver = driver_from_extension(path)
             writer = get_writer_for_driver(driver)
             if writer is not None:
-                s = writer(path, mode, driver=driver,
-                           width=width, height=height,
-                           count=count, crs=crs,
-                           transform=transform,
-                           dtype=dtype, nodata=nodata,
-                           sharing=sharing,
-                           **kwargs)
+                dataset = writer(
+                    path,
+                    mode,
+                    driver=driver,
+                    width=width,
+                    height=height,
+                    count=count,
+                    crs=crs,
+                    transform=transform,
+                    dtype=dtype,
+                    nodata=nodata,
+                    sharing=sharing,
+                    **kwargs
+                )
             else:
                 raise DriverCapabilityError(
                     "Writer does not exist for driver: %s" % str(driver)
@@ -243,10 +331,25 @@ def open(fp, mode='r', driver=None, width=None, height=None, count=None,
         else:
             raise DriverCapabilityError(
                 "mode must be one of 'r', 'r+', or 'w', not %s" % mode)
-        return s
+
+        return dataset
 
 
 Band = namedtuple('Band', ['ds', 'bidx', 'dtype', 'shape'])
+Band.__doc__ = """
+Band of a Dataset.
+
+Parameters
+----------
+ds: dataset object
+    An opened rasterio dataset object.
+bidx: int or sequence of ints
+    Band number(s), index starting at 1.
+dtype: str
+    rasterio data type of the data.
+shape: tuple
+    Width, height of band.
+"""
 
 
 def band(ds, bidx):
@@ -261,7 +364,7 @@ def band(ds, bidx):
 
     Returns
     -------
-    rasterio.Band
+    Band
     """
     return Band(ds, bidx, set(ds.dtypes).pop(), ds.shape)
 
@@ -271,7 +374,7 @@ def pad(array, transform, pad_width, mode=None, **kwargs):
 
     Parameters
     ----------
-    array: ndarray
+    array: numpy.ndarray
         Numpy ndarray, for best results a 2D array
     transform: Affine transform
         transform object mapping pixel space to coordinates
@@ -287,8 +390,7 @@ def pad(array, transform, pad_width, mode=None, **kwargs):
 
     Notes
     -----
-    See numpy docs for details on mode and other kwargs:
-    http://docs.scipy.org/doc/numpy-1.10.0/reference/generated/numpy.pad.html
+    See :func:`numpy.pad` for details on mode and other kwargs.
     """
     import numpy as np
     transform = guard_transform(transform)

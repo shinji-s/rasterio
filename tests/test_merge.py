@@ -43,7 +43,8 @@ def test_data_dir_overlapping(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "method,value", [("first", 1), ("last", 2), ("min", 1), ("max", 3)]
+    "method,value",
+    [("first", 1), ("last", 2), ("min", 1), ("max", 3), ("sum", 6), ("count", 3)],
 )
 def test_merge_method(test_data_dir_overlapping, method, value):
     """Merge method produces expected values in intersection"""
@@ -72,7 +73,7 @@ def test_unsafe_casting():
 
 
 @pytest.mark.skipif(
-    not (boto3.Session()._session.get_credentials()),
+    not (boto3.Session().get_credentials()),
     reason="S3 raster access requires credentials",
 )
 @pytest.mark.network

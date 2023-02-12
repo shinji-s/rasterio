@@ -65,9 +65,62 @@ cdef extern from "sys/stat.h" nogil:
 
 cdef extern from "cpl_vsi.h" nogil:
 
-    ctypedef int vsi_l_offset
+    ctypedef unsigned long long vsi_l_offset
     ctypedef FILE VSILFILE
     ctypedef stat VSIStatBufL
+    ctypedef enum VSIRangeStatus:
+        VSI_RANGE_STATUS_UNKNOWN,
+        VSI_RANGE_STATUS_DATA,
+        VSI_RANGE_STATUS_HOLE,
+
+    # GDAL Plugin System (GDAL 3.0+)
+    # Filesystem functions
+    ctypedef int (*VSIFilesystemPluginStatCallback)(void*, const char*, VSIStatBufL*, int)  # Optional
+    ctypedef int (*VSIFilesystemPluginUnlinkCallback)(void*, const char*)  # Optional
+    ctypedef int (*VSIFilesystemPluginRenameCallback)(void*, const char*, const char*)  # Optional
+    ctypedef int (*VSIFilesystemPluginMkdirCallback)(void*, const char*, long)  # Optional
+    ctypedef int (*VSIFilesystemPluginRmdirCallback)(void*, const char*)  # Optional
+    ctypedef char** (*VSIFilesystemPluginReadDirCallback)(void*, const char*, int)  # Optional
+    ctypedef char** (*VSIFilesystemPluginSiblingFilesCallback)(void*, const char*)  # Optional (GDAL 3.2+)
+    ctypedef void* (*VSIFilesystemPluginOpenCallback)(void*, const char*, const char*)
+    # File functions
+    ctypedef vsi_l_offset (*VSIFilesystemPluginTellCallback)(void*)
+    ctypedef int (*VSIFilesystemPluginSeekCallback)(void*, vsi_l_offset, int)
+    ctypedef size_t (*VSIFilesystemPluginReadCallback)(void*, void*, size_t, size_t)
+    ctypedef int (*VSIFilesystemPluginReadMultiRangeCallback)(void*, int, void**, const vsi_l_offset*, const size_t*)  # Optional
+    ctypedef VSIRangeStatus (*VSIFilesystemPluginGetRangeStatusCallback)(void*, vsi_l_offset, vsi_l_offset)  # Optional
+    ctypedef int (*VSIFilesystemPluginEofCallback)(void*)  # Mandatory?
+    ctypedef size_t (*VSIFilesystemPluginWriteCallback)(void*, const void*, size_t, size_t)
+    ctypedef int (*VSIFilesystemPluginFlushCallback)(void*)  # Optional
+    ctypedef int (*VSIFilesystemPluginTruncateCallback)(void*, vsi_l_offset)
+    ctypedef int (*VSIFilesystemPluginCloseCallback)(void*)  # Optional
+    # Plugin function container struct
+    ctypedef struct VSIFilesystemPluginCallbacksStruct:
+        void *pUserData
+        VSIFilesystemPluginStatCallback stat
+        VSIFilesystemPluginUnlinkCallback unlink
+        VSIFilesystemPluginRenameCallback rename
+        VSIFilesystemPluginMkdirCallback mkdir
+        VSIFilesystemPluginRmdirCallback rmdir
+        VSIFilesystemPluginReadDirCallback read_dir
+        VSIFilesystemPluginOpenCallback open
+        VSIFilesystemPluginTellCallback tell
+        VSIFilesystemPluginSeekCallback seek
+        VSIFilesystemPluginReadCallback read
+        VSIFilesystemPluginReadMultiRangeCallback read_multi_range
+        VSIFilesystemPluginGetRangeStatusCallback get_range_status
+        VSIFilesystemPluginEofCallback eof
+        VSIFilesystemPluginWriteCallback write
+        VSIFilesystemPluginFlushCallback flush
+        VSIFilesystemPluginTruncateCallback truncate
+        VSIFilesystemPluginCloseCallback close
+        size_t nBufferSize
+        size_t nCacheSize
+        VSIFilesystemPluginSiblingFilesCallback sibling_files
+
+    int VSIInstallPluginHandler(const char*, const VSIFilesystemPluginCallbacksStruct*)
+    VSIFilesystemPluginCallbacksStruct* VSIAllocFilesystemPluginCallbacksStruct()
+    void VSIFreeFilesystemPluginCallbacksStruct(VSIFilesystemPluginCallbacksStruct*)
 
     unsigned char *VSIGetMemFileBuffer(const char *path,
                                        vsi_l_offset *data_len,
@@ -78,7 +131,9 @@ cdef extern from "cpl_vsi.h" nogil:
     int VSIFCloseL(VSILFILE *fp)
     int VSIUnlink(const char *path)
     int VSIMkdir(const char *path, long mode)
+    char** VSIReadDir(const char *path)
     int VSIRmdir(const char *path)
+    int VSIRmdirRecursive(const char *path)
     int VSIFFlushL(VSILFILE *fp)
     size_t VSIFReadL(void *buffer, size_t nSize, size_t nCount, VSILFILE *fp)
     int VSIFSeekL(VSILFILE *fp, vsi_l_offset nOffset, int nWhence)
@@ -100,9 +155,6 @@ cdef extern from "ogr_srs_api.h" nogil:
         OGRCoordinateTransformationH source)
     int OCTTransform(OGRCoordinateTransformationH ct, int nCount, double *x,
                      double *y, double *z)
-    int OSRAutoIdentifyEPSG(OGRSpatialReferenceH srs)
-    int OSRMorphFromESRI(OGRSpatialReferenceH srs)
-    int OSRMorphToESRI(OGRSpatialReferenceH srs)
     void OSRCleanup()
     OGRSpatialReferenceH OSRClone(OGRSpatialReferenceH srs)
     int OSRExportToProj4(OGRSpatialReferenceH srs, char **params)
@@ -120,25 +172,39 @@ cdef extern from "ogr_srs_api.h" nogil:
     int OSRSetFromUserInput(OGRSpatialReferenceH srs, const char *input)
     OGRErr OSRValidate(OGRSpatialReferenceH srs)
     double OSRGetLinearUnits(OGRSpatialReferenceH srs, char **ppszName)
+    double OSRGetAngularUnits(OGRSpatialReferenceH srs, char **ppszName)
     int OSREPSGTreatsAsLatLong(OGRSpatialReferenceH srs)
     int OSREPSGTreatsAsNorthingEasting(OGRSpatialReferenceH srs)
     OGRSpatialReferenceH *OSRFindMatches(OGRSpatialReferenceH srs, char **options, int *entries, int **matchConfidence)
     void OSRFreeSRSArray(OGRSpatialReferenceH *srs)
+    ctypedef enum OSRAxisMappingStrategy:
+        OAMS_TRADITIONAL_GIS_ORDER
+
+    const char* OSRGetName(OGRSpatialReferenceH hSRS)
+    void OSRSetAxisMappingStrategy(OGRSpatialReferenceH hSRS, OSRAxisMappingStrategy)
+    void OSRSetPROJSearchPaths(const char *const *papszPaths)
+    char ** OSRGetPROJSearchPaths()
+    OGRErr OSRExportToWktEx(OGRSpatialReferenceH, char ** ppszResult,
+                            const char* const* papszOptions)
+    OGRErr OSRExportToPROJJSON(OGRSpatialReferenceH hSRS,
+                                char ** ppszReturn,
+                                const char* const* papszOptions)
 
 
-IF CTE_GDAL_MAJOR_VERSION >= 3:
+IF (CTE_GDAL_MAJOR_VERSION, CTE_GDAL_MINOR_VERSION) >= (3, 4):
     cdef extern from "ogr_srs_api.h" nogil:
 
-        ctypedef enum OSRAxisMappingStrategy:
-            OAMS_TRADITIONAL_GIS_ORDER
-
-        const char* OSRGetName(OGRSpatialReferenceH hSRS)
-        void OSRSetAxisMappingStrategy(OGRSpatialReferenceH hSRS, OSRAxisMappingStrategy)
-        void OSRSetPROJSearchPaths(const char *const *papszPaths)
-        OGRErr OSRExportToWktEx(OGRSpatialReferenceH, char ** ppszResult,
-                                const char* const* papszOptions)
-ELSE:
-    cdef int OAMS_TRADITIONAL_GIS_ORDER = 0
+        int OCTTransformBounds(
+            OGRCoordinateTransformationH hCT,
+            const double xmin,
+            const double ymin,
+            const double xmax,
+            const double ymax,
+            double* out_xmin,
+            double* out_ymin,
+            double* out_xmax,
+            double* out_ymax,
+            const int densify_pts )
 
 
 cdef extern from "gdal.h" nogil:
@@ -157,10 +223,13 @@ cdef extern from "gdal.h" nogil:
     ctypedef enum GDALDataType:
         GDT_Unknown
         GDT_Byte
+        GDT_Int8
         GDT_UInt16
         GDT_Int16
         GDT_UInt32
         GDT_Int32
+        GDT_UInt64
+        GDT_Int64
         GDT_Float32
         GDT_Float64
         GDT_CInt16
@@ -284,7 +353,8 @@ cdef extern from "gdal.h" nogil:
     int GDALRasterIO(GDALRasterBandH band, int, int xoff, int yoff, int xsize,
                      int ysize, void *buffer, int width, int height, int,
                      int poff, int loff)
-
+    CPLErr GDALGetRasterStatistics(GDALRasterBandH band, int approx, int force, double *min, double*max, double *mean, double *std)
+    void GDALDatasetClearStatistics(GDALDatasetH hDS)
     ctypedef struct GDALRasterIOExtraArg:
         int nVersion
         GDALRIOResampleAlg eResampleAlg
@@ -332,9 +402,6 @@ cdef extern from "gdal.h" nogil:
                            int nOverviews, int *overviews, int nBands,
                            int *bands, void *progress_func,
                            void *progress_data)
-    int GDALCheckVersion(int nVersionMajor, int nVersionMinor,
-                         const char *pszCallingComponentName)
-    const char* GDALVersionInfo(const char *pszRequest)
     CPLErr GDALSetGCPs(GDALDatasetH hDS, int nGCPCount, const GDAL_GCP *pasGCPList,
                        const char *pszGCPProjection)
     const GDAL_GCP *GDALGetGCPs(GDALDatasetH hDS)
@@ -571,6 +638,11 @@ IF (CTE_GDAL_MAJOR_VERSION, CTE_GDAL_MINOR_VERSION) >= (3, 2):
 
 
 cdef extern from "gdal_alg.h" nogil:
+    void *GDALCreateGCPTransformer( int nGCPCount, const GDAL_GCP *pasGCPList,
+                          int nReqOrder, int bReversed)
+    void *GDALDestroyGCPTransformer( void *pTransformArg)
+    int GDALGCPTransform( void *pTransformArg, int bDstToSrc, int nPointCount,
+                          double *x, double *y, double *z, int *panSuccess)
     void *GDALCreateRPCTransformer( GDALRPCInfo *psRPC, int bReversed,
                           double dfPixErrThreshold,
                           char **papszOptions )
