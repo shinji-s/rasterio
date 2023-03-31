@@ -28,7 +28,10 @@
 extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.doctest',
+    'sphinx.ext.intersphinx',
     'sphinx.ext.napoleon',
+    'sphinx.ext.todo',
+    'sphinx_click',
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -56,6 +59,7 @@ author = u'Sean Gillies'
 #
 # Parse the version from the rasterio module.
 try:
+    import rasterio
     release = rasterio.__version__
 except:
     with open('../rasterio/__init__.py') as f:
@@ -144,7 +148,7 @@ html_theme = 'sphinx_rtd_theme'
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ['_static']
+#html_static_path = ['_static']
 
 # Add any extra paths that contain custom files (such as robots.txt or
 # .htaccess) here, relative to this directory. These files are copied
@@ -362,4 +366,9 @@ epub_exclude_files = ['search.html']
 
 
 # Example configuration for intersphinx: refer to the Python standard library.
-intersphinx_mapping = {'https://docs.python.org/': None}
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/", None),
+    "gdal": ("https://gdal.org/", None),
+    "numpy": ("https://numpy.org/doc/stable", None),
+    "matplotlib": ("https://matplotlib.org/stable/", None),
+}

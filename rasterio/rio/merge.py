@@ -1,11 +1,22 @@
 """$ rio merge"""
 
+import warnings
 
 import click
 
 from rasterio.enums import Resampling
+from rasterio.errors import RasterioDeprecationWarning
 from rasterio.rio import options
 from rasterio.rio.helpers import resolve_inout
+from rasterio.merge import MERGE_METHODS
+
+
+def deprecated_precision(*args):
+    warnings.warn(
+        "The --precision option is unused, deprecated, and will be removed in 2.0.0.",
+        RasterioDeprecationWarning,
+    )
+    return None
 
 
 @click.command(short_help="Merge a stack of raster datasets.")
@@ -18,19 +29,39 @@ from rasterio.rio.helpers import resolve_inout
               type=click.Choice([r.name for r in Resampling if r.value <= 7]),
               default='nearest', help="Resampling method.",
               show_default=True)
+@click.option('--method',
+              type=click.Choice(list(MERGE_METHODS)),
+              default='first', help="Merging strategy.",
+              show_default=True)
 @options.nodata_opt
+@options.dtype_opt
 @options.bidx_mult_opt
 @options.overwrite_opt
 @click.option(
     "--precision",
     type=int,
     default=None,
-    help="Number of decimal places of precision in alignment of pixels",
+    callback=deprecated_precision,
+    help="Unused, deprecated, and will be removed in 2.0.0.",
 )
 @options.creation_options
 @click.pass_context
-def merge(ctx, files, output, driver, bounds, res, resampling,
-          nodata, bidx, overwrite, precision, creation_options):
+def merge(
+    ctx,
+    files,
+    output,
+    driver,
+    bounds,
+    res,
+    resampling,
+    method,
+    nodata,
+    dtype,
+    bidx,
+    overwrite,
+    precision,
+    creation_options,
+):
     """Copy valid pixels from input files to an output file.
 
     All files must have the same number of bands, data type, and
@@ -49,6 +80,7 @@ def merge(ctx, files, output, driver, bounds, res, resampling,
     \b
       --res 0.1 0.1  => --res 0.1 (square)
       --res 0.1 0.2  => --res 0.1 --res 0.2  (rectangular)
+
     """
     from rasterio.merge import merge as merge_tool
 
@@ -56,6 +88,8 @@ def merge(ctx, files, output, driver, bounds, res, resampling,
         files=files, output=output, overwrite=overwrite)
 
     resampling = Resampling[resampling]
+    if driver:
+        creation_options.update(driver=driver)
 
     with ctx.obj["env"]:
         merge_tool(
@@ -63,9 +97,10 @@ def merge(ctx, files, output, driver, bounds, res, resampling,
             bounds=bounds,
             res=res,
             nodata=nodata,
-            precision=precision,
+            dtype=dtype,
             indexes=(bidx or None),
             resampling=resampling,
+            method=method,
             dst_path=output,
             dst_kwds=creation_options,
         )

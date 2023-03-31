@@ -7,7 +7,9 @@ utilize CPLSetThreadLocalConfigOption instead. All threads use
 CPLGetConfigOption and not CPLGetThreadLocalConfigOption, thus child
 threads will inherit config options from the main thread unless the
 option is set to a new value inside the thread.
+
 """
+
 from contextlib import contextmanager
 import logging
 import os
@@ -15,19 +17,20 @@ import os.path
 import sys
 import threading
 
-from rasterio._base cimport _safe_osr_release
 from rasterio._err import CPLE_BaseError
 from rasterio._err cimport exc_wrap_ogrerr, exc_wrap_int
+from rasterio._filepath cimport install_filepath_plugin, uninstall_filepath_plugin
+from rasterio._version import gdal_version
 
 from libc.stdio cimport stderr
-
 
 level_map = {
     0: 0,
     1: logging.DEBUG,
     2: logging.WARNING,
     3: logging.ERROR,
-    4: logging.CRITICAL }
+    4: logging.CRITICAL
+}
 
 code_map = {
     0: 'CPLE_None',
@@ -41,47 +44,61 @@ code_map = {
     8: 'CPLE_NoWriteAccess',
     9: 'CPLE_UserInterrupt',
     10: 'ObjectNull',
-
-    # error numbers 11-16 are introduced in GDAL 2.1. See
-    # https://github.com/OSGeo/gdal/pull/98.
     11: 'CPLE_HttpResponse',
     12: 'CPLE_AWSBucketNotFound',
     13: 'CPLE_AWSObjectNotFound',
     14: 'CPLE_AWSAccessDenied',
     15: 'CPLE_AWSInvalidCredentials',
-    16: 'CPLE_AWSSignatureDoesNotMatch'}
-
+    16: 'CPLE_AWSSignatureDoesNotMatch'
+}
 
 log = logging.getLogger(__name__)
 
 try:
     import certifi
-    os.environ.setdefault("CURL_CA_BUNDLE", certifi.where())
+    ca_bundle = certifi.where()
+    os.environ.setdefault("GDAL_CURL_CA_BUNDLE", ca_bundle)
+    os.environ.setdefault("PROJ_CURL_CA_BUNDLE", ca_bundle)
 except ImportError:
     pass
 
 cdef bint is_64bit = sys.maxsize > 2 ** 32
 
+cdef VSIFilesystemPluginCallbacksStruct* filepath_plugin = NULL
+
 
 cdef void log_error(CPLErr err_class, int err_no, const char* msg) with gil:
-    """Send CPL debug messages and warnings to Python's logger."""
-    log = logging.getLogger(__name__)
-    if err_class < 3:
-        if err_no in code_map:
-            log.log(level_map[err_class], "%s in %s", code_map[err_no], msg)
+    """Send CPL errors to Python's logger.
+
+    Because this function is called by GDAL with no Python context, we
+    can't propagate exceptions that we might raise here. They'll be
+    ignored.
+
+    """
+    if err_no in code_map:
+        # We've observed that some GDAL functions may emit multiple
+        # ERROR level messages and yet succeed. We want to see those
+        # messages in our log file, but not at the ERROR level. We
+        # turn the level down to INFO.
+        if err_class == 3:
+            log.info(
+                "GDAL signalled an error: err_no=%r, msg=%r",
+                err_no,
+                msg
+            )
         else:
-            log.info("Unknown error number %r", err_no)
+            log.log(level_map[err_class], "%s in %s", code_map[err_no], msg)
+    else:
+        log.info("Unknown error number %r", err_no)
 
 
 # Definition of GDAL callback functions, one for Windows and one for
 # other platforms. Each calls log_error().
 IF UNAME_SYSNAME == "Windows":
-    cdef void __stdcall logging_error_handler(CPLErr err_class, int err_no,
-                                              const char* msg) with gil:
+    cdef void __stdcall logging_error_handler(CPLErr err_class, int err_no, const char* msg) with gil:
         log_error(err_class, err_no, msg)
 ELSE:
-    cdef void logging_error_handler(CPLErr err_class, int err_no,
-                                    const char* msg) with gil:
+    cdef void logging_error_handler(CPLErr err_class, int err_no, const char* msg) with gil:
         log_error(err_class, err_no, msg)
 
 
@@ -92,7 +109,7 @@ def driver_count():
 
 cpdef get_gdal_config(key, normalize=True):
     """Get the value of a GDAL configuration option.  When requesting
-    ``GDAL_CACHEMAX`` the value is returned unaltered. 
+    ``GDAL_CACHEMAX`` the value is returned unaltered.
 
     Parameters
     ----------
@@ -255,7 +272,7 @@ class GDALDataFinder:
 
     def search_debian(self, prefix=sys.prefix):
         """Check Debian locations"""
-        gdal_release_name = GDALVersionInfo("RELEASE_NAME")
+        gdal_release_name = gdal_version()
         datadir = os.path.join(prefix, 'share', 'gdal', '{}.{}'.format(*gdal_release_name.split('.')[:2]))
         return datadir if os.path.exists(os.path.join(datadir, 'header.dxf')) else None
 
@@ -294,7 +311,8 @@ class PROJDataFinder:
         else:
             return True
         finally:
-            _safe_osr_release(osr)
+            if osr != NULL:
+                OSRRelease(osr)
 
 
     def search(self, prefix=None):
@@ -339,11 +357,13 @@ cdef class GDALEnv(ConfigEnv):
         # lock when the environment starts, and the inner avoids a
         # potential race condition.
         if not self._have_registered_drivers:
-            with threading.Lock():
-                if not self._have_registered_drivers:
 
+            with threading.Lock():
+
+                if not self._have_registered_drivers:
                     GDALAllRegister()
                     OGRRegisterAll()
+                    install_filepath_plugin(filepath_plugin)
 
                     if 'GDAL_DATA' in os.environ:
                         log.debug("GDAL_DATA found in environment.")
@@ -356,7 +376,7 @@ cdef class GDALEnv(ConfigEnv):
                             log.debug("GDAL data found in package: path=%r.", path)
                             self.update_config_options(GDAL_DATA=path)
 
-                        # See https://github.com/mapbox/rasterio/issues/1631.
+                        # See https://github.com/rasterio/rasterio/issues/1631.
                         elif GDALDataFinder().find_file("header.dxf"):
                             log.debug("GDAL data files are available at built-in paths.")
 
@@ -367,7 +387,13 @@ cdef class GDALEnv(ConfigEnv):
                                 log.debug("GDAL data found in other locations: path=%r.", path)
                                 self.update_config_options(GDAL_DATA=path)
 
-                    if 'PROJ_LIB' in os.environ:
+                    if 'PROJ_DATA' in os.environ:
+                        # PROJ 9.1+
+                        log.debug("PROJ_DATA found in environment.")
+                        path = os.environ["PROJ_DATA"]
+                        set_proj_data_search_path(path)
+                    elif 'PROJ_LIB' in os.environ:
+                        # PROJ < 9.1
                         log.debug("PROJ_LIB found in environment.")
                         path = os.environ["PROJ_LIB"]
                         set_proj_data_search_path(path)
@@ -424,15 +450,53 @@ cdef class GDALEnv(ConfigEnv):
     def _dump_open_datasets(self):
         GDALDumpOpenDatasets(stderr)
 
+    def _dump_vsimem(self):
+        dirs = VSIReadDir("/vsimem/")
+        num_dirs = CSLCount(dirs)
+        try:
+            return list([dirs[i] for i in range(num_dirs) if str(dirs[i])])
+        finally:
+            CSLDestroy(dirs)
+
 
 def set_proj_data_search_path(path):
     """Set PROJ data search path"""
-    IF CTE_GDAL_MAJOR_VERSION >= 3:
-        cdef char **paths = NULL
-        cdef const char *path_c = NULL
-        path_b = path.encode("utf-8")
-        path_c = path_b
-        paths = CSLAddString(paths, path_c)
-        OSRSetPROJSearchPaths(paths)
-    ELSE:
-        os.environ["PROJ_LIB"] = path
+    cdef char **paths = NULL
+    cdef const char *path_c = NULL
+    path_b = path.encode("utf-8")
+    path_c = path_b
+    paths = CSLAddString(paths, path_c)
+    OSRSetPROJSearchPaths(<const char *const *>paths)
+
+
+def get_proj_data_search_paths():
+    """
+    Get the PROJ DATA search paths
+
+    Requires GDAL 3.0.3+
+
+    Returns
+    -------
+    List[str]
+    """
+    path_list = []
+    cdef char **paths = OSRGetPROJSearchPaths()
+    cdef int iii = 0
+    while paths[iii] != NULL:
+        path_list.append(paths[iii])
+        iii += 1
+    return path_list
+
+
+def get_gdal_data():
+    """
+    Get the GDAL DATA path
+
+    Returns
+    -------
+    str
+    """
+    cdef const char *gdal_data = CPLGetConfigOption("GDAL_DATA", NULL)
+    if gdal_data != NULL:
+        return gdal_data
+    return None

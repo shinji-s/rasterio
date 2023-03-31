@@ -7,20 +7,22 @@ import warnings
 
 import numpy as np
 
-import rasterio._loading
-
-with rasterio._loading.add_gdal_dll_directories():
-    import rasterio
-    from rasterio.dtypes import validate_dtype, can_cast_dtype, get_minimum_dtype, _getnpdtype
-    from rasterio.enums import MergeAlg
-    from rasterio.env import ensure_env
-    from rasterio.errors import ShapeSkipWarning
-    from rasterio._features import _shapes, _sieve, _rasterize, _bounds
-    from rasterio import warp
-    from rasterio.rio.helpers import coords
-    from rasterio.transform import Affine
-    from rasterio.transform import IDENTITY, guard_transform, rowcol
-    from rasterio.windows import Window
+import rasterio
+from rasterio.dtypes import (
+    validate_dtype,
+    can_cast_dtype,
+    get_minimum_dtype,
+    _getnpdtype,
+)
+from rasterio.enums import MergeAlg
+from rasterio.env import ensure_env, GDALVersion
+from rasterio.errors import ShapeSkipWarning
+from rasterio._features import _shapes, _sieve, _rasterize, _bounds
+from rasterio import warp
+from rasterio.rio.helpers import coords
+from rasterio.transform import Affine
+from rasterio.transform import IDENTITY, guard_transform
+from rasterio.windows import Window
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +43,7 @@ def geometry_mask(
     ----------
     geometries : iterable over geometries (GeoJSON-like objects)
     out_shape : tuple or list
-        Shape of output numpy ndarray.
+        Shape of output :class:`numpy.ndarray`.
     transform : Affine transformation object
         Transformation from pixel coordinates of `source` to the
         coordinate system of the input `shapes`. See the `transform`
@@ -56,8 +58,8 @@ def geometry_mask(
 
     Returns
     -------
-    numpy ndarray of type 'bool'
-        Result
+    numpy.ndarray :
+        Type is :class:`numpy.bool_`
 
     Notes
     -----
@@ -81,15 +83,15 @@ def shapes(source, mask=None, connectivity=4, transform=IDENTITY):
 
     Parameters
     ----------
-    source : array, dataset object, Band, or tuple(dataset, bidx)
+    source : numpy.ndarray, dataset object, Band, or tuple(dataset, bidx)
         Data type must be one of rasterio.int16, rasterio.int32,
         rasterio.uint8, rasterio.uint16, or rasterio.float32.
-    mask : numpy ndarray or rasterio Band object, optional
+    mask : numpy.ndarray or rasterio Band object, optional
         Must evaluate to bool (rasterio.bool_ or rasterio.uint8). Values
         of False or 0 will be excluded from feature generation.  Note
         well that this is the inverse sense from Numpy's, where a mask
         value of True indicates invalid data in an array. If `source` is
-        a Numpy masked array and `mask` is None, the source's mask will
+        a :class:`numpy.ma.MaskedArray` and `mask` is None, the source's mask will
         be inverted and used in place of `mask`.
     connectivity : int, optional
         Use 4 or 8 pixel connectivity for grouping pixels into features
@@ -142,9 +144,9 @@ def sieve(source, size, out=None, mask=None, connectivity=4):
         rasterio.uint16, or rasterio.float32
     size : int
         minimum polygon size (number of pixels) to retain.
-    out : numpy ndarray, optional
+    out : numpy.ndarray, optional
         Array of same shape and data type as `source` in which to store results.
-    mask : numpy ndarray or rasterio Band object, optional
+    mask : numpy.ndarray or rasterio Band object, optional
         Values of False or 0 will be excluded from feature generation
         Must evaluate to bool (rasterio.bool_ or rasterio.uint8)
     connectivity : int, optional
@@ -152,7 +154,7 @@ def sieve(source, size, out=None, mask=None, connectivity=4):
 
     Returns
     -------
-    out : numpy ndarray
+    out : numpy.ndarray
         Result
 
     Notes
@@ -193,19 +195,19 @@ def rasterize(
 
     Parameters
     ----------
-    shapes : iterable of (`geometry`, `value`) pairs or iterable over
-        geometries. The `geometry` can either be an object that
-        implements the geo interface or GeoJSON-like object. If no
-        `value` is provided the `default_value` will be used. If `value`
-        is `None` the `fill` value will be used.
+    shapes : iterable of (`geometry`, `value`) pairs or geometries
+        The `geometry` can either be an object that implements the geo
+        interface or GeoJSON-like object. If no `value` is provided
+        the `default_value` will be used. If `value` is `None` the
+        `fill` value will be used.
     out_shape : tuple or list with 2 integers
-        Shape of output numpy ndarray.
+        Shape of output :class:`numpy.ndarray`.
     fill : int or float, optional
         Used as fill value for all areas not covered by input
         geometries.
-    out : numpy ndarray, optional
-        Array of same shape and data type as `source` in which to store
-        results.
+    out : numpy.ndarray, optional
+        Array in which to store results. If not provided, out_shape 
+        and dtype are required.
     transform : Affine transformation object, optional
         Transformation from pixel coordinates of `source` to the
         coordinate system of the input `shapes`. See the `transform`
@@ -222,12 +224,12 @@ def rasterize(
                 the new value will be added to the existing raster.
     default_value : int or float, optional
         Used as value for all geometries, if not provided in `shapes`.
-    dtype : rasterio or numpy data type, optional
+    dtype : rasterio or numpy.dtype, optional
         Used as data type for results, if `out` is not provided.
 
     Returns
     -------
-    numpy ndarray
+    numpy.ndarray :
         If `out` was not None then `out` is returned, it will have been
         modified in-place. If `out` was None, this will be a new array.
 
@@ -253,6 +255,10 @@ def rasterize(
     valid_dtypes = (
         'int16', 'int32', 'uint8', 'uint16', 'uint32', 'float32', 'float64'
     )
+    if GDALVersion.runtime().at_least("3.5"):
+        valid_dtypes += ("int64", "uint64")
+    if GDALVersion.runtime().at_least("3.7"):
+        valid_dtypes += ("int8",)
 
     def format_invalid_dtype(param):
         return '{0} dtype must be one of: {1}'.format(
@@ -301,7 +307,7 @@ def rasterize(
             if geom_type == 'GeometryCollection':
                 # GeometryCollections need to be handled as individual parts to
                 # avoid holes in output:
-                # https://github.com/mapbox/rasterio/issues/1253.
+                # https://github.com/rasterio/rasterio/issues/1253.
                 # Only 1-level deep since GeoJSON spec discourages nested
                 # GeometryCollections
                 for part in geom['geometries']:
@@ -440,48 +446,21 @@ def geometry_window(
 
     """
 
-    if pad_x:
-        pad_x = abs(pad_x * dataset.res[0])
+    all_bounds = [bounds(shape, transform=~dataset.transform) for shape in shapes]
 
-    if pad_y:
-        pad_y = abs(pad_y * dataset.res[1])
-
-    all_bounds = [bounds(shape) for shape in shapes]
-
-    xs = [
+    cols = [
         x
         for (left, bottom, right, top) in all_bounds
         for x in (left - pad_x, right + pad_x, right + pad_x, left - pad_x)
     ]
-    ys = [
+    rows = [
         y
         for (left, bottom, right, top) in all_bounds
-        for y in (top + pad_y, top + pad_y, bottom - pad_x, bottom - pad_x)
+        for y in (top - pad_y, top - pad_y, bottom + pad_y, bottom + pad_y)
     ]
 
-    rows1, cols1 = rowcol(
-        dataset.transform, xs, ys, op=math.floor, precision=pixel_precision
-    )
-
-    if isinstance(rows1, (int, float)):
-        rows1 = [rows1]
-    if isinstance(cols1, (int, float)):
-        cols1 = [cols1]
-
-    rows2, cols2 = rowcol(
-        dataset.transform, xs, ys, op=math.ceil, precision=pixel_precision
-    )
-
-    if isinstance(rows2, (int, float)):
-        rows2 = [rows2]
-    if isinstance(cols2, (int, float)):
-        cols2 = [cols2]
-
-    rows = rows1 + rows2
-    cols = cols1 + cols2
-
-    row_start, row_stop = min(rows), max(rows)
-    col_start, col_stop = min(cols), max(cols)
+    row_start, row_stop = int(math.floor(min(rows))), int(math.ceil(max(rows)))
+    col_start, col_stop = int(math.floor(min(cols))), int(math.ceil(max(cols)))
 
     window = Window(
         col_off=col_start,

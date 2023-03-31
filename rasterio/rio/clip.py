@@ -9,6 +9,7 @@ from . import options
 import rasterio
 from rasterio.coords import disjoint_bounds
 from rasterio.crs import CRS
+from rasterio.enums import MaskFlags
 from rasterio.windows import Window
 
 logger = logging.getLogger(__name__)
@@ -134,9 +135,9 @@ def clip(
                     Window(0, 0, src.width, src.height)
                 )
 
-            # Get the window with integer height
-            # and width that contains the bounds window.
-            out_window = bounds_window.round_lengths(op='ceil')
+            # Align window, as in gdal_translate.
+            out_window = bounds_window.round_lengths()
+            out_window = out_window.round_offsets()
 
             height = int(out_window.height)
             width = int(out_window.width)
@@ -176,3 +177,15 @@ def clip(
                         masked=True,
                     )
                 )
+
+                if MaskFlags.per_dataset in src.mask_flag_enums[0]:
+                    out.write_mask(
+                        src.read_masks(
+                            window=out_window,
+                            out_shape=(src.count, height, width),
+                            boundless=True,
+                        )[0]
+                    )
+
+                # TODO: copy other properties (GCPs etc). Several other
+                # programs need the same utility.

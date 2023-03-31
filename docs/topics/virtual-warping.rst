@@ -1,9 +1,9 @@
 Virtual Warping
 ===============
 
-Rasterio has a ``WarpedVRT`` class that abstracts many of the details of raster
+Rasterio has a :class:`.WarpedVRT` class that abstracts many of the details of raster
 warping by using an in-memory `Warped VRT
-<http://www.gdal.org/gdal_vrttut.html#gdal_vrttut_warped>`__. A ``WarpedVRT`` can
+<http://www.gdal.org/gdal_vrttut.html#gdal_vrttut_warped>`__. A :class:`.WarpedVRT` can
 be the easiest solution for tiling large datasets.
 
 For example, to virtually warp the ``RGB.byte.tif`` test dataset from its
@@ -58,16 +58,16 @@ extract pixels corresponding to its central zoom 9 tile, do the following.
 Normalizing Data to a Consistent Grid
 -------------------------------------
 
-A ``WarpedVRT`` can be used to normalize a stack of images with differing
+A :class:`.WarpedVRT` can be used to normalize a stack of images with differing
 projections, bounds, cell sizes, or dimensions against a regular grid
 in a defined bounding box.
 
 The `tests/data/RGB.byte.tif` file is in UTM zone 18, so another file in a
 different CRS is required for demonstration.  This command will create a new
 image with drastically different dimensions and cell size, and reproject to
-WGS84.  As of this writing ``$ rio warp`` implements only a subset of
-`$ gdalwarp <http://www.gdal.org/gdalwarp.html>`__'s features, so
-``$ gdalwarp`` must be used to achieve the desired transform:
+WGS84.  As of this writing ``rio warp`` implements only a subset of
+`gdalwarp <http://www.gdal.org/gdalwarp.html>`__'s features, so
+``gdalwarp`` must be used to achieve the desired transform:
 
 .. code-block:: console
 
@@ -124,7 +124,7 @@ CRS, and cell size within a pre-defined bounding box:
     # Destination CRS is Web Mercator
     dst_crs = CRS.from_epsg(3857)
 
-    # These coordiantes are in Web Mercator
+    # These coordinates are in Web Mercator
     dst_bounds = -8744355, 2768114, -8559167, 2908677
 
     # Output image dimensions

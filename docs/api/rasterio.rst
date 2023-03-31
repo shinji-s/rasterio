@@ -5,6 +5,7 @@ Subpackages
 -----------
 
 .. toctree::
+   :maxdepth: 2
 
    rasterio.rio
 
@@ -13,15 +14,6 @@ Submodules
 
 .. toctree::
 
-   rasterio._base
-   rasterio._crs
-   rasterio._env
-   rasterio._err
-   rasterio._example
-   rasterio._features
-   rasterio._fill
-   rasterio._io
-   rasterio._warp
    rasterio.control
    rasterio.coords
    rasterio.crs
@@ -38,7 +30,9 @@ Submodules
    rasterio.path
    rasterio.plot
    rasterio.profiles
+   rasterio.rpc
    rasterio.sample
+   rasterio.session
    rasterio.shutil
    rasterio.tools
    rasterio.transform
@@ -51,5 +45,6 @@ Module contents
 
 .. automodule:: rasterio
    :members:
+   :exclude-members: CRS, Env
    :undoc-members:
    :show-inheritance:

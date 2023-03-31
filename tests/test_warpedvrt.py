@@ -2,9 +2,9 @@
 
 from __future__ import division
 import logging
+import shutil
 
 import affine
-import boto3
 import numpy
 import pytest
 
@@ -19,15 +19,9 @@ from rasterio.vrt import WarpedVRT
 from rasterio.warp import transform_bounds
 from rasterio.windows import Window
 
-from .conftest import gdal_version, requires_gdal21, requires_gdal2
+from .conftest import gdal_version, credentials
 
 log = logging.getLogger(__name__)
-
-# Custom markers.
-credentials = pytest.mark.skipif(
-    not (boto3.Session()._session.get_credentials()),
-    reason="S3 raster access requires credentials",
-)
 
 DST_CRS = "EPSG:3857"
 
@@ -55,7 +49,6 @@ def test_warped_vrt(path_rgb_byte_tif):
         assert vrt.mask_flag_enums == ([MaskFlags.nodata],) * 3
 
 
-@requires_gdal21
 def test_warped_vrt_nondefault_nodata(path_rgb_byte_tif):
     """A VirtualVRT has expected nondefault nodata values."""
     with rasterio.open(path_rgb_byte_tif) as src:
@@ -69,7 +62,6 @@ def test_warped_vrt_nondefault_nodata(path_rgb_byte_tif):
         assert vrt.mask_flag_enums == ([MaskFlags.all_valid],) * 3
 
 
-@requires_gdal21(reason="Nodata deletion requires GDAL 2.1+")
 def test_warped_vrt_add_alpha(dsrec, path_rgb_byte_tif):
     """A VirtualVRT has the expected VRT properties."""
     with rasterio.Env() as env:
@@ -98,7 +90,6 @@ def test_warped_vrt_add_alpha(dsrec, path_rgb_byte_tif):
         assert "1 N GTiff" in records[0]
 
 
-@requires_gdal21(reason="Nodata deletion requires GDAL 2.1+")
 def test_warped_vrt_msk_add_alpha(path_rgb_msk_byte_tif, caplog):
     """Add an alpha band to the VRT to access per-dataset mask of a source"""
     with rasterio.open(path_rgb_msk_byte_tif) as src:
@@ -121,7 +112,6 @@ def test_warped_vrt_msk_add_alpha(path_rgb_msk_byte_tif, caplog):
         assert "RGB2.byte.tif.msk" in caplog.text
 
 
-@requires_gdal21(reason="nodata deletion requires gdal 2.1+")
 def test_warped_vrt_msk_nodata(path_rgb_msk_byte_tif, caplog):
     """Specifying dst nodata also works for source with .msk"""
     with rasterio.open(path_rgb_msk_byte_tif) as src:
@@ -228,7 +218,7 @@ def test_transformer_options(path_rgb_byte_tif):
 
 
 def test_transformer_options__width_height(path_rgb_byte_tif):
-    transform = affine.Affine(79.1, 0.0, 0.0, 0.0, -71.8, 51552.4)
+    transform = affine.Affine(79.1, 0.0, 0.0, 0.0, -71.8, 718.0)
     transformer_options = {
         "SRC_METHOD": "NO_GEOTRANSFORM",
         "DST_METHOD": "NO_GEOTRANSFORM",
@@ -245,23 +235,22 @@ def test_transformer_options__width_height(path_rgb_byte_tif):
         assert vrt.transform.almost_equals(transform)
 
 
-@requires_gdal21(reason="S3 raster access requires GDAL 2.1+")
 @credentials
 @pytest.mark.network
 def test_wrap_s3():
     """A warp wrapper's dataset has the expected properties"""
-    L8TIF = "s3://landsat-pds/L8/139/045/LC81390452014295LGN00/LC81390452014295LGN00_B1.TIF"
+    L8TIF = "s3://sentinel-cogs/sentinel-s2-l2a-cogs/45/C/VQ/2022/11/S2B_45CVQ_20221102_0_L2A/B01.tif"
     with rasterio.open(L8TIF) as src:
         with WarpedVRT(src, crs=DST_CRS, src_nodata=0, nodata=0) as vrt:
             assert vrt.crs == DST_CRS
             assert tuple(round(x, 1) for x in vrt.bounds) == (
-                9556764.6, 2345109.3, 9804595.9, 2598509.1
+                9222324.9, -14139657.4, 9730075.2, -13635650.5
             )
-            assert vrt.name == "WarpedVRT(s3://landsat-pds/L8/139/045/LC81390452014295LGN00/LC81390452014295LGN00_B1.TIF)"
+            assert vrt.name == f"WarpedVRT({L8TIF})"
             assert vrt.indexes == (1,)
             assert vrt.nodatavals == (0,)
             assert vrt.dtypes == ("uint16",)
-            assert vrt.shape == (7827, 7655)
+            assert vrt.shape == (1885, 1899)
 
 
 def test_warped_vrt_nodata_read(path_rgb_byte_tif):
@@ -284,7 +273,7 @@ def test_crs_should_be_set(path_rgb_byte_tif, tmpdir, complex):
 
     Permalink to ``GDALCreateWarpedVRT()`` call:
 
-        https://github.com/mapbox/rasterio/blob/1f759e5f67628f163ea2550d8926b91545245712/rasterio/_warp.pyx#L753
+        https://github.com/rasterio/rasterio/blob/1f759e5f67628f163ea2550d8926b91545245712/rasterio/_warp.pyx#L753
 
     """
 
@@ -381,14 +370,13 @@ def test_image_nodata_mask(red_green):
             assert image[64, 64, 0] == 255
 
 
-@requires_gdal2(reason="Warped VRT overviews require GDAL 2")
 def test_hit_ovr(red_green):
     """Zoomed out read hits the overviews"""
     # GDAL doesn't log overview hits for local files , so we copy the
     # overviews of green.tif over the red overviews and expect to find
     # green pixels below.
     green_ovr = red_green.join("green.tif.ovr")
-    green_ovr.rename(red_green.join("red.tif.ovr"))
+    shutil.move(green_ovr, red_green.join("red.tif.ovr"))
     assert not green_ovr.exists()
     with rasterio.open(str(red_green.join("red.tif.ovr"))) as ovr:
         data = ovr.read()
@@ -401,7 +389,6 @@ def test_hit_ovr(red_green):
         assert image[0, 0, 1] == 204
 
 
-@requires_gdal21(reason="add_alpha requires GDAL 2.1+")
 def test_warped_vrt_1band_add_alpha():
     """Add an alpha band to the VRT to access per-dataset mask of a source"""
     with rasterio.open('tests/data/shade.tif') as src:
@@ -413,7 +400,6 @@ def test_warped_vrt_1band_add_alpha():
         )
 
 
-@requires_gdal21(reason="add_alpha requires GDAL 2.1+")
 def test_invalid_add_alpha():
     """Adding an alpha band to a VRT that already has one fails"""
     with rasterio.open('tests/data/RGBA.byte.tif') as src:
@@ -462,7 +448,6 @@ def test_warpedvrt_issue1744(data):
             assert src.dtypes == vrt.dtypes == ("float32",)
 
 
-@requires_gdal2
 def test_open_datasets(capfd, path_rgb_byte_tif):
     """Number of open datasets is expected"""
     with rasterio.Env() as env:
@@ -483,7 +468,6 @@ def test_open_datasets(capfd, path_rgb_byte_tif):
         assert "1 N GTiff" not in captured.err
 
 
-@requires_gdal2
 def test_warp_warp(dsrec, path_rgb_byte_tif):
     """Vincent! :P"""
     with rasterio.Env() as env:
@@ -535,7 +519,7 @@ def test_out_dtype(red_green):
 
 
 def test_sample(red_green):
-    """See https://github.com/mapbox/rasterio/issues/1833."""
+    """See https://github.com/rasterio/rasterio/issues/1833."""
     with rasterio.Env():
         with rasterio.open(str(red_green.join("red.tif"))) as src, WarpedVRT(
             src,
@@ -668,7 +652,7 @@ def test_warpedvrt_gcps__width_height(tmp_path):
             assert vrt.width == 10
             assert vrt.crs == crs
             assert vrt.dst_transform.almost_equals(
-                affine.Affine(22271.389322449897, 0.0, 11882210.275, 0.0, -20016.05875815117, 260167856.0)
+                affine.Affine(22271.389322449897, 0.0, 115698.25, 0.0, -20016.05875815117, 2818720.0)
             )
 
 
@@ -679,5 +663,5 @@ def test_warpedvrt_rpcs__width_height():
             assert vrt.width == 10
             assert vrt.crs == CRS.from_epsg(4326)
             assert vrt.dst_transform.almost_equals(
-                affine.Affine(0.008598908695300157, 0.0, -14127.055592440069, 0.0, -0.0041566403046337285, 2738.897200252146)
+                affine.Affine(0.008598908695300157, 0.0, -123.48824818566573, 0.0, -0.0041566403046337285, 49.52797830474037)
             )

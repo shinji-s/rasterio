@@ -1,15 +1,13 @@
 """Rasterio tools module
 
 See this RFC about Rasterio tools:
-https://github.com/mapbox/rasterio/issues/1300.
+https://github.com/rasterio/rasterio/issues/1300.
 """
 
 import json
 
-import rasterio._loading
-with rasterio._loading.add_gdal_dll_directories():
-    import rasterio
-    from rasterio.features import dataset_features
+import rasterio
+from rasterio.features import dataset_features
 
 
 class JSONSequenceTool:

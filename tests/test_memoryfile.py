@@ -2,8 +2,8 @@
 Tests in this file will ONLY run for GDAL >= 2.x"""
 
 from io import BytesIO
-import logging
 import os.path
+from pathlib import Path
 
 from affine import Affine
 import numpy
@@ -12,15 +12,7 @@ import pytest
 import rasterio
 from rasterio.io import MemoryFile, ZipMemoryFile
 from rasterio.enums import MaskFlags
-from rasterio.env import GDALVersion
 from rasterio.shutil import copyfiles
-
-
-# Skip ENTIRE module if not GDAL >= 2.x.
-# pytestmark is a keyword that instructs pytest to skip this module.
-pytestmark = pytest.mark.skipif(
-    not GDALVersion.runtime().major >= 2,
-    reason="MemoryFile requires GDAL 2.x")
 
 
 @pytest.fixture(scope='session')
@@ -30,9 +22,9 @@ def rgb_file_bytes(path_rgb_byte_tif):
 
 
 @pytest.fixture(scope='session')
-def rgb_lzw_file_bytes():
+def rgb_lzw_file_bytes(path_rgb_lzw_byte_tif):
     """Get the bytes of our RGB.bytes.tif file"""
-    return open('tests/data/rgb_lzw.tif', 'rb').read()
+    return open(path_rgb_lzw_byte_tif, 'rb').read()
 
 
 @pytest.fixture(scope='function')
@@ -96,7 +88,7 @@ def test_closed():
     """A closed MemoryFile can not be opened"""
     with MemoryFile() as memfile:
         pass
-    with pytest.raises(IOError):
+    with pytest.raises(OSError):
         memfile.open()
 
 
@@ -172,13 +164,53 @@ def test_read(tmpdir, rgb_file_bytes):
         assert src.count == 3
 
 
-def test_file_object_read(rgb_file_object):
-    """An example of reading from a file object"""
+@pytest.mark.skipif(not rasterio.have_vsi_plugin, reason="Test requires FilePath")
+def test_file_object_read_filepath(monkeypatch, request, capfd, rgb_file_object):
+    """Opening a file object with FilePath returns a dataset with no attached MemoryFile."""
     with rasterio.open(rgb_file_object) as src:
         assert src.driver == 'GTiff'
         assert src.count == 3
         assert src.dtypes == ('uint8', 'uint8', 'uint8')
         assert src.read().shape == (3, 718, 791)
+
+
+def test_file_object_read_memfile(monkeypatch, request, capfd, rgb_file_object):
+    """Opening a file object without FilePath returns a dataset with attached MemoryFile."""
+    monkeypatch.setattr(rasterio, "have_vsi_plugin", False)
+    with rasterio.Env() as env:
+        with rasterio.open(rgb_file_object) as src:
+            assert src.driver == 'GTiff'
+            assert src.count == 3
+            assert src.dtypes == ('uint8', 'uint8', 'uint8')
+            assert src.read().shape == (3, 718, 791)
+
+        # Exiting src causes the attached MemoryFile context to be
+        # exited and the temporary in-memory file is deleted.
+        env._dump_open_datasets()
+        captured = capfd.readouterr()
+        assert "/vsimem/{}".format(request.node.name) not in captured.err
+
+
+def test_issue2360_no_with(monkeypatch, request, capfd, rgb_file_object):
+    """Opening a file object without FilePath returns a dataset with attached MemoryFile."""
+    monkeypatch.setattr(rasterio, "have_vsi_plugin", False)
+    with rasterio.Env() as env:
+        src = rasterio.open(rgb_file_object)
+        assert src.driver == 'GTiff'
+        assert src.count == 3
+        assert src.dtypes == ('uint8', 'uint8', 'uint8')
+        assert src.read().shape == (3, 718, 791)
+
+        env._dump_open_datasets()
+        captured = capfd.readouterr()
+        assert "/vsimem/{}".format(request.node.name) in captured.err
+
+        # Closing src causes the attached MemoryFile context to be
+        # exited and the temporary in-memory file is deleted.
+        src.close()
+        env._dump_open_datasets()
+        captured = capfd.readouterr()
+        assert "/vsimem/{}".format(request.node.name) not in captured.err
 
 
 def test_file_object_read_variant(rgb_file_bytes):
@@ -213,23 +245,11 @@ def test_test_file_object_write(tmpdir, rgb_data_and_profile):
         assert src.read().shape == (3, 718, 791)
 
 
-def test_nonpersistemt_memfile_fail_example(rgb_data_and_profile):
-    """An example of writing to a file object"""
-    data, profile = rgb_data_and_profile
-    with BytesIO() as fout:
-        with rasterio.open(fout, 'w', **profile) as dst:
-            dst.write(data)
-
-        # This fails because the MemoryFile created in open() is
-        # gone.
-        rasterio.open(fout)
-
-
 def test_zip_closed():
     """A closed ZipMemoryFile can not be opened"""
     with ZipMemoryFile() as zipmemfile:
         pass
-    with pytest.raises(IOError):
+    with pytest.raises(OSError):
         zipmemfile.open('foo')
 
 
@@ -244,11 +264,11 @@ def test_zip_file_object_read(path_zip_file):
                 assert src.read().shape == (3, 768, 1024)
 
 
-def test_vrt_memfile():
+def test_vrt_memfile(data_dir, path_white_gemini_iv_vrt):
     """Successfully read an in-memory VRT"""
-    with open('tests/data/white-gemini-iv.vrt') as vrtfile:
+    with open(path_white_gemini_iv_vrt) as vrtfile:
         source = vrtfile.read()
-        source = source.replace('<SourceFilename relativeToVRT="1">389225main_sw_1965_1024.jpg</SourceFilename>', '<SourceFilename relativeToVRT="0">{}/389225main_sw_1965_1024.jpg</SourceFilename>'.format(os.path.abspath("tests/data")))
+        source = source.replace('<SourceFilename relativeToVRT="1">389225main_sw_1965_1024.jpg</SourceFilename>', '<SourceFilename relativeToVRT="0">{}/389225main_sw_1965_1024.jpg</SourceFilename>'.format(data_dir))
 
     with MemoryFile(source.encode('utf-8'), ext='vrt') as memfile:
         with memfile.open() as src:
@@ -271,15 +291,29 @@ def test_write_plus_mode():
 
 
 def test_write_plus_model_jpeg():
-    with rasterio.Env(), MemoryFile() as memfile:
-        with memfile.open(driver='JPEG', dtype='uint8', count=3, height=32, width=32, crs='epsg:3226', transform=Affine.identity() * Affine.scale(0.5, -0.5)) as dst:
-            dst.write(numpy.full((32, 32), 255, dtype='uint8'), 1)
-            dst.write(numpy.full((32, 32), 204, dtype='uint8'), 2)
-            dst.write(numpy.full((32, 32), 153, dtype='uint8'), 3)
-            data = dst.read()
-            assert (data[0] == 255).all()
-            assert (data[1] == 204).all()
-            assert (data[2] == 153).all()
+    """Ensure /vsimem/ file is cleaned up."""
+    with rasterio.Env() as env:
+        with MemoryFile() as memfile:
+            with memfile.open(
+                driver="JPEG",
+                dtype="uint8",
+                count=3,
+                height=32,
+                width=32,
+                crs="epsg:3226",
+                transform=Affine.identity() * Affine.scale(0.5, -0.5),
+            ) as dst:
+                dst.write(numpy.full((32, 32), 255, dtype="uint8"), 1)
+                dst.write(numpy.full((32, 32), 204, dtype="uint8"), 2)
+                dst.write(numpy.full((32, 32), 153, dtype="uint8"), 3)
+                data = dst.read()
+                assert (data[0] == 255).all()
+                assert (data[1] == 204).all()
+                assert (data[2] == 153).all()
+
+        assert (
+            Path(*Path(memfile.name).parts[2:]).parent.as_posix() not in env._dump_vsimem()
+        )
 
 
 def test_memfile_copyfiles(path_rgb_msk_byte_tif):
@@ -334,9 +368,10 @@ def test_write_plus_mode_blockxsize_requires_width():
         with pytest.raises(TypeError):
             memfile.open(driver='GTiff', dtype='uint8', count=3, height=32, crs='epsg:3226', transform=Affine.identity() * Affine.scale(0.5, -0.5), blockxsize=128)
 
-def test_write_rpcs_to_memfile():
+
+def test_write_rpcs_to_memfile(path_rgb_byte_rpc_vrt):
     """Ensure we can write rpcs to a new MemoryFile"""
-    with rasterio.open('tests/data/RGB.byte.rpc.vrt') as src:
+    with rasterio.open(path_rgb_byte_rpc_vrt) as src:
         profile = src.profile.copy()
         with MemoryFile() as memfile:
             with memfile.open(**profile) as dst:

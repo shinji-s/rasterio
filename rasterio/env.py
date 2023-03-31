@@ -1,6 +1,5 @@
 """Rasterio's GDAL/AWS environment"""
 
-import attr
 from functools import wraps, total_ordering
 from inspect import getfullargspec as getargspec
 import logging
@@ -9,14 +8,19 @@ import re
 import threading
 import warnings
 
-import rasterio._loading
-with rasterio._loading.add_gdal_dll_directories():
-    from rasterio._env import (
-            GDALEnv, get_gdal_config, set_gdal_config,
-            GDALDataFinder, PROJDataFinder, set_proj_data_search_path)
-    from rasterio.errors import (
-        EnvError, GDALVersionError, RasterioDeprecationWarning)
-    from rasterio.session import Session, DummySession
+import attr
+
+from rasterio._env import (
+    GDALEnv,
+    get_gdal_config,
+    set_gdal_config,
+    GDALDataFinder,
+    PROJDataFinder,
+    set_proj_data_search_path,
+)
+from rasterio._version import gdal_version
+from rasterio.errors import EnvError, GDALVersionError, RasterioDeprecationWarning
+from rasterio.session import Session, DummySession
 
 
 class ThreadEnv(threading.local):
@@ -256,6 +260,13 @@ class Env:
         """
         return local._env._dump_open_datasets()
 
+    def _dump_vsimem(self):
+        """Returns contents of /vsimem/.
+
+        For debugging and testing purposes.
+        """
+        return local._env._dump_vsimem()
+
     def __enter__(self):
         log.debug("Entering env context: %r", self)
         if local._env is None:
@@ -422,8 +433,10 @@ def ensure_env_with_credentials(f):
         else:
             env_ctor = Env.from_defaults
 
-        if isinstance(args[0], str):
-            session_cls = Session.cls_from_path(args[0])
+        fp_arg = kwds.get("fp", None) or args[0]
+
+        if isinstance(fp_arg, str):
+            session_cls = Session.cls_from_path(fp_arg)
 
             if local._env and session_cls.hascreds(getenv()):
                 session_cls = DummySession
@@ -497,7 +510,6 @@ class GDALVersion:
     @classmethod
     def runtime(cls):
         """Return GDALVersion of current GDAL runtime"""
-        from rasterio._base import gdal_version  # to avoid circular import
         return cls.parse(gdal_version())
 
     def at_least(self, other):
@@ -511,22 +523,27 @@ def require_gdal_version(version, param=None, values=None, is_max_version=False,
     by the runtime version of GDAL.  Raises GDALVersionError if conditions
     are not met.
 
-    Examples:
-    \b
+    Examples
+    --------
+
+    .. code-block:: python
+
         @require_gdal_version('2.2')
         def some_func():
 
     calling `some_func` with a runtime version of GDAL that is < 2.2 raises a
     GDALVersionErorr.
 
-    \b
+    .. code-block:: python
+
         @require_gdal_version('2.2', param='foo')
         def some_func(foo='bar'):
 
     calling `some_func` with parameter `foo` of any value on GDAL < 2.2 raises
     a GDALVersionError.
 
-    \b
+    .. code-block:: python
+
         @require_gdal_version('2.2', param='foo', values=('bar',))
         def some_func(foo=None):
 
@@ -626,7 +643,7 @@ if 'GDAL_DATA' not in os.environ:
         log.debug("GDAL data found in package: path=%r.", path)
         set_gdal_config("GDAL_DATA", path)
 
-    # See https://github.com/mapbox/rasterio/issues/1631.
+    # See https://github.com/rasterio/rasterio/issues/1631.
     elif GDALDataFinder().find_file("header.dxf"):
         log.debug("GDAL data files are available at built-in paths.")
 
@@ -637,7 +654,12 @@ if 'GDAL_DATA' not in os.environ:
             set_gdal_config("GDAL_DATA", path)
             log.debug("GDAL data found in other locations: path=%r.", path)
 
-if "PROJ_LIB" in os.environ:
+if "PROJ_DATA" in os.environ:
+    # PROJ 9.1+
+    path = os.environ["PROJ_DATA"]
+    set_proj_data_search_path(path)
+elif "PROJ_LIB" in os.environ:
+    # PROJ < 9.1
     path = os.environ["PROJ_LIB"]
     set_proj_data_search_path(path)
 
@@ -646,7 +668,7 @@ elif PROJDataFinder().search_wheel():
     log.debug("PROJ data found in package: path=%r.", path)
     set_proj_data_search_path(path)
 
-# See https://github.com/mapbox/rasterio/issues/1631.
+# See https://github.com/rasterio/rasterio/issues/1631.
 elif PROJDataFinder().has_data():
     log.debug("PROJ data files are available at built-in paths.")
 

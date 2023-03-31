@@ -10,6 +10,7 @@ import uuid
 import zipfile
 
 import affine
+import boto3
 from click.testing import CliRunner
 import pytest
 import numpy as np
@@ -25,6 +26,16 @@ DEFAULT_SHAPE = (10, 10)
 
 if sys.version_info > (3,):
     reduce = functools.reduce
+
+try:
+    have_credentials = boto3.Session().get_credentials()
+except Exception:
+    have_credentials = False
+
+credentials = pytest.mark.skipif(
+    not(have_credentials),
+    reason="S3 raster access requires credentials")
+
 
 test_files = [os.path.join(os.path.dirname(__file__), p) for p in [
     'data/RGB.byte.tif', 'data/float.tif', 'data/float32.tif',
@@ -65,14 +76,14 @@ def red_green(tmpdir):
 
 @pytest.fixture
 def basic_geometry():
-    """
+    """A Polygon with 2D coordinates.
+
     Returns
     -------
-
-    dict: GeoJSON-style geometry object.
+    dict : GeoJSON-style geometry object.
         Coordinates are in grid coordinates (Affine.identity()).
-    """
 
+    """
     return {
         'type': 'Polygon',
         'coordinates': [[(2, 2), (2, 4.25), (4.25, 4.25), (4.25, 2), (2, 2)]]
@@ -80,15 +91,33 @@ def basic_geometry():
 
 
 @pytest.fixture
-def rotation_geometry():
-    """
+def basic_geometry_3d():
+    """A Polygon with 3D coordinates.
+
     Returns
     -------
-
-    dict: GeoJSON-style geometry object.
+    dict : GeoJSON-style geometry object.
         Coordinates are in grid coordinates (Affine.identity()).
-    """
 
+    """
+    return {
+        "type": "Polygon",
+        "coordinates": [
+            [(2, 2, 0), (2, 4.25, 0), (4.25, 4.25, 0), (4.25, 2, 0), (2, 2, 0)]
+        ],
+    }
+
+
+@pytest.fixture
+def rotation_geometry():
+    """A rotated geometry.
+
+    Returns
+    -------
+    dict : GeoJSON-style geometry object.
+        Coordinates are in grid coordinates (Affine.identity()).
+
+    """
     return {
         'type': 'Polygon',
         'coordinates': [[(481070, 4481140), (481040, 4481160),
@@ -99,18 +128,15 @@ def rotation_geometry():
 
 @pytest.fixture
 def geojson_point():
-    """
+    """A 2D Point.
+
     Returns
     -------
-
-    dict: GeoJSON-style Point geometry object.
+    dict : GeoJSON-style Point geometry object.
         Coordinates are in grid coordinates (Affine.identity()).
-    """
 
-    return {
-        'type': 'Point',
-        'coordinates': (2, 2)
-    }
+    """
+    return {"type": "Point", "coordinates": (2, 2)}
 
 
 @pytest.fixture
@@ -470,13 +496,25 @@ def gdalenv(request):
 @pytest.fixture(scope='session')
 def data_dir():
     """Absolute file path to the directory containing test datasets."""
-    return os.path.abspath(os.path.join('tests', 'data'))
+    root = os.path.join(os.path.dirname(__file__), '..')
+    return os.path.abspath(os.path.join(root, 'tests', 'data'))
 
 
 @pytest.fixture(scope='session')
 def path_rgb_byte_tif(data_dir):
     """The original RGB test fixture with no sidecar files"""
     return os.path.join(data_dir, 'RGB.byte.tif')
+
+
+@pytest.fixture(scope='session')
+def path_rgb_lzw_byte_tif(data_dir):
+    """The original RGB test fixture with LZW compression."""
+    return os.path.join(data_dir, 'rgb_lzw.tif')
+
+
+@pytest.fixture(scope='session')
+def path_rgb_byte_rpc_vrt(data_dir):
+    return os.path.join(data_dir, 'RGB.byte.rpc.vrt')
 
 
 @pytest.fixture(scope='session')
@@ -494,6 +532,11 @@ def path_rgb_msk_byte_tif(data_dir):
 @pytest.fixture(scope='session')
 def path_cogeo_tif(data_dir):
     return os.path.join(data_dir, 'cogeo.tif')
+
+
+@pytest.fixture(scope='session')
+def path_white_gemini_iv_vrt(data_dir):
+    return os.path.join(data_dir, 'white-gemini-iv.vrt')
 
 
 @pytest.fixture(scope='function')
@@ -595,38 +638,15 @@ class MockGeoInterface:
 # Define helpers to skip tests based on GDAL version
 gdal_version = GDALVersion.runtime()
 
-requires_only_gdal1 = pytest.mark.skipif(
-    gdal_version.major != 1,
-    reason="Only relevant for GDAL 1.x")
-
-requires_gdal2 = pytest.mark.skipif(
-    not gdal_version.major >= 2,
-    reason="Requires GDAL 2.x")
-
-requires_gdal21 = pytest.mark.skipif(
-    not gdal_version.at_least('2.1'),
-    reason="Requires GDAL 2.1.x")
-
-requires_gdal22 = pytest.mark.skipif(
-    not gdal_version.at_least('2.2'),
-    reason="Requires GDAL 2.2.x")
-
-requires_gdal23 = pytest.mark.skipif(
-    not gdal_version.at_least('2.3'),
-    reason="Requires GDAL ~= 2.3")
-
-requires_gdal_lt_3 = pytest.mark.skipif(
-    gdal_version.__lt__('3.0'),
-    reason="Requires GDAL 1.x/2.x")
-
-requires_gdal3 = pytest.mark.skipif(
-    not gdal_version.at_least('3.0'),
-    reason="Requires GDAL 3.0.x")
-
-requires_gdal32 = pytest.mark.skipif(
-    not gdal_version.at_least('3.2'),
-    reason="Requires GDAL 3.2.x")
-
 requires_gdal33 = pytest.mark.skipif(
     not gdal_version.at_least('3.3'),
     reason="Requires GDAL 3.3.x")
+
+requires_gdal35 = pytest.mark.skipif(
+    not gdal_version.at_least('3.5'),
+    reason="Requires GDAL 3.5.x")
+
+requires_gdal_lt_35 = pytest.mark.skipif(
+    gdal_version.at_least('3.5'),
+    reason="Requires GDAL before 3.5",
+)

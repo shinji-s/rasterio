@@ -1,13 +1,19 @@
 """rasterio._err
 
 Exception-raising wrappers for GDAL API functions.
+
 """
+
 from enum import IntEnum
 import logging
 import sys
 
+log = logging.getLogger(__name__)
 
-# Python exceptions expressing the CPL error numbers.
+_GDAL_DEBUG_DOCS = (
+    "https://rasterio.readthedocs.io/en/latest/topics/errors.html"
+    "#debugging-internal-gdal-functions"
+)
 
 class CPLE_BaseError(Exception):
     """Base CPL error class
@@ -140,32 +146,33 @@ cdef inline object exc_check():
     Returns
     -------
     An Exception, SystemExit, or None
+
     """
     cdef const char *msg_c = NULL
 
     err_type = CPLGetLastErrorType()
     err_no = CPLGetLastErrorNo()
-    err_msg = CPLGetLastErrorMsg()
+    msg_c = CPLGetLastErrorMsg()
 
-    if err_msg == NULL:
+    if msg_c == NULL:
         msg = "No error message."
     else:
-        # Reformat messages.
-        msg_b = err_msg
+        msg_b = msg_c
         msg = msg_b.decode('utf-8')
         msg = msg.replace("`", "'")
         msg = msg.replace("\n", " ")
 
     if err_type == 3:
+        exception = exception_map.get(err_no, CPLE_BaseError)(err_type, err_no, msg)
         CPLErrorReset()
-        return exception_map.get(
-            err_no, CPLE_BaseError)(err_type, err_no, msg)
-
-    if err_type == 4:
-        return SystemExit("Fatal error: {0}".format((err_type, err_no, msg)))
-
+        return exception
+    elif err_type == 4:
+        exception = SystemExit("Fatal error: {0}".format((err_type, err_no, msg)))
+        CPLErrorReset()
+        return exception
     else:
-        return
+        CPLErrorReset()
+        return None
 
 
 cdef int exc_wrap(int retval) except -1:
@@ -180,11 +187,13 @@ cdef int exc_wrap_int(int err) except -1:
     """Wrap a GDAL/OGR function that returns CPLErr or OGRErr (int)
 
     Raises a Rasterio exception if a non-fatal error has be set.
+
     """
     if err:
         exc = exc_check()
         if exc:
             raise exc
+    CPLErrorReset()
     return err
 
 
@@ -194,6 +203,7 @@ cdef OGRErr exc_wrap_ogrerr(OGRErr err) except -1:
 
     """
     if err == 0:
+        CPLErrorReset()
         return err
     else:
         raise CPLE_BaseError(3, err, "OGR Error code {}".format(err))
@@ -203,21 +213,31 @@ cdef void *exc_wrap_pointer(void *ptr) except NULL:
     """Wrap a GDAL/OGR function that returns GDALDatasetH etc (void *)
 
     Raises a Rasterio exception if a non-fatal error has be set.
+
     """
     if ptr == NULL:
         exc = exc_check()
         if exc:
             raise exc
+        raise SystemError(
+            f"Unknown GDAL Error. To debug: {_GDAL_DEBUG_DOCS}"
+        )
+    CPLErrorReset()
     return ptr
 
 
-cdef VSILFILE *exc_wrap_vsilfile(VSILFILE *f) except NULL:
+cdef VSILFILE *exc_wrap_vsilfile(VSILFILE *vsifile) except NULL:
     """Wrap a GDAL/OGR function that returns GDALDatasetH etc (void *)
 
     Raises a Rasterio exception if a non-fatal error has be set.
+
     """
-    if f == NULL:
+    if vsifile == NULL:
         exc = exc_check()
         if exc:
             raise exc
-    return f
+        raise SystemError(
+            f"Unknown GDAL Error. To debug: {_GDAL_DEBUG_DOCS}"
+        )
+    CPLErrorReset()
+    return vsifile
